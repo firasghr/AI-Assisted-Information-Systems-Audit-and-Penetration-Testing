@@ -8,6 +8,10 @@ venv/
 env/
 .env
 
+# Frontend build artifacts
+frontend/.next/
+frontend/out/
+
 # Build artifacts
 dist/
 build/
