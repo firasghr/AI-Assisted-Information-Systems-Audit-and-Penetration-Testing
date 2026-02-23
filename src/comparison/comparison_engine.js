@@ -192,6 +192,43 @@ function compare(aiAnalysisData, aiMetrics, manualTimePerVulnSeconds = 120) {
     severityDist[sev] = vulnerabilities.filter((v) => v.severity === sev).length;
   }
 
+  // 10. Average Precision (AP) and NDCG@10
+  //   Ground truth label: a finding is "relevant" if severity is critical or high.
+  //   AP measures whether the most relevant findings appear at the top.
+  const relevance = (v) => (v.severity === "critical" || v.severity === "high" ? 1 : 0);
+
+  function averagePrecision(orderedVulns) {
+    const totalRelevant = orderedVulns.filter(relevance).length;
+    // No relevant items in this dataset — AP is undefined; return 0 so the
+    // improvement percentage calculation stays numerically stable.
+    if (totalRelevant === 0) return 0;
+    let hits = 0;
+    let sumPrecision = 0;
+    orderedVulns.forEach((v, idx) => {
+      if (relevance(v)) {
+        hits++;
+        sumPrecision += hits / (idx + 1);
+      }
+    });
+    return sumPrecision / totalRelevant;
+  }
+
+  function ndcg(orderedVulns, k = 10) {
+    const slice = orderedVulns.slice(0, k);
+    const dcg = slice.reduce((sum, v, i) => sum + (Math.pow(2, relevance(v)) - 1) / Math.log2(i + 2), 0);
+    const ideal = [...orderedVulns].sort((a, b) => relevance(b) - relevance(a)).slice(0, k);
+    const idcg = ideal.reduce((sum, v, i) => sum + (Math.pow(2, relevance(v)) - 1) / Math.log2(i + 2), 0);
+    return idcg === 0 ? 1 : dcg / idcg;
+  }
+
+  const traditionalOrdered = traditionalRanked.sort((a, b) => a.traditional_rank - b.traditional_rank);
+  const aiOrdered = [...aiRanked].sort((a, b) => a.ai_rank - b.ai_rank);
+
+  const ap_traditional = averagePrecision(traditionalOrdered);
+  const ap_ai = averagePrecision(aiOrdered);
+  const ndcg_traditional = ndcg(traditionalOrdered);
+  const ndcg_ai = ndcg(aiOrdered);
+
   const metrics = {
     generated_at: new Date().toISOString(),
     total_vulnerabilities: n,
@@ -223,6 +260,15 @@ function compare(aiAnalysisData, aiMetrics, manualTimePerVulnSeconds = 120) {
     avg_cvss_score: parseFloat(avgCvss),
     avg_ai_risk_score: parseFloat(avgAiRisk),
 
+    // Retrieval quality metrics (ground truth: critical + high = relevant)
+    average_precision_traditional: parseFloat(ap_traditional.toFixed(4)),
+    average_precision_ai: parseFloat(ap_ai.toFixed(4)),
+    ndcg_at_10_traditional: parseFloat(ndcg_traditional.toFixed(4)),
+    ndcg_at_10_ai: parseFloat(ndcg_ai.toFixed(4)),
+    ap_improvement_percent: parseFloat(
+      (ap_traditional > 0 ? ((ap_ai - ap_traditional) / ap_traditional) * 100 : 0).toFixed(1)
+    ),
+
     // AI token usage
     ai_tokens_used: aiMetrics?.total_tokens || 0,
     ai_model: aiMetrics?.model || "unknown",
@@ -247,11 +293,12 @@ function compare(aiAnalysisData, aiMetrics, manualTimePerVulnSeconds = 120) {
   };
 
   logger.info(
-    "Comparison complete | tau=%.4f divergence=%s%% fp_detected=%d time_saved=%ds",
+    "Comparison complete | tau=%.4f divergence=%s%% fp_detected=%d time_saved=%ds ap_improvement=%s%%",
     metrics.kendall_tau,
     metrics.divergent_rankings_percent,
     metrics.false_positives_detected_count,
-    metrics.time_saved_seconds
+    metrics.time_saved_seconds,
+    metrics.ap_improvement_percent
   );
 
   return metrics;

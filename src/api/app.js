@@ -12,7 +12,9 @@
  *   - All endpoints validate required parameters before processing.
  *   - API key authentication should be added before production deployment.
  *   - Scan targets are validated to prevent SSRF in a production context.
- *   - Rate limiting should be added for public-facing deployments.
+ *   - Rate limiting protects all /api/* routes.
+ *   - CORS is restricted to CORS_ORIGIN env variable (default: localhost:4000).
+ *   - X-Request-Id header enables distributed tracing.
  */
 
 "use strict";
@@ -22,6 +24,7 @@ const path = require("path");
 const fs = require("fs");
 const { execFile } = require("child_process");
 const { promisify } = require("util");
+const { randomUUID } = require("crypto");
 const rateLimit = require("express-rate-limit");
 
 const logger = require("../utils/logger");
@@ -33,8 +36,37 @@ const { generateReport } = require("../report/report_generator");
 
 const execFileAsync = promisify(execFile);
 
+// ---------------------------------------------------------------------------
+// Startup validation — fail fast if configuration is broken
+// ---------------------------------------------------------------------------
+config.validate(logger);
+
 const app = express();
-app.use(express.json());
+
+// ---------------------------------------------------------------------------
+// CORS — allow only the configured frontend origin(s)
+// Inline implementation avoids adding the `cors` package as a dependency.
+// The allowed origins Set is computed once at startup for O(1) per-request
+// lookup instead of splitting and iterating on every request.
+// ---------------------------------------------------------------------------
+const allowedOrigins = new Set(
+  config.cors.origin.split(",").map((s) => s.trim()).filter(Boolean)
+);
+
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin && (config.cors.origin === "*" || allowedOrigins.has(origin))) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  }
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type,Authorization");
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(204);
+  }
+  next();
+});
+
+app.use(express.json({ limit: "100kb" }));
 
 // ---------------------------------------------------------------------------
 // Rate limiting — required to protect system-command and filesystem endpoints
@@ -51,10 +83,23 @@ const apiLimiter = rateLimit({
 app.use("/api", apiLimiter);
 
 // ---------------------------------------------------------------------------
-// Middleware: request logging
+// Middleware: assign X-Request-Id and log method + path + status + duration
 // ---------------------------------------------------------------------------
-app.use((req, _res, next) => {
-  logger.info("%s %s", req.method, req.path);
+app.use((req, res, next) => {
+  const requestId = randomUUID();
+  req.requestId = requestId;
+  res.setHeader("X-Request-Id", requestId);
+
+  const startMs = Date.now();
+  res.on("finish", () => {
+    logger.info(`${req.method} ${req.path} → ${res.statusCode} (${Date.now() - startMs}ms)`, {
+      request_id: requestId,
+      method: req.method,
+      path: req.path,
+      status: res.statusCode,
+      duration_ms: Date.now() - startMs,
+    });
+  });
   next();
 });
 
@@ -94,7 +139,8 @@ app.post("/api/scan/nmap", async (req, res) => {
     return res.status(400).json({ error: "target is required" });
   }
 
-  logger.info("Starting Nmap scan for %s", target);
+  logger.scanStarted(target, "nmap");
+  const t0 = Date.now();
 
   try {
     const scriptPath = path.join(__dirname, "..", "scanner", "nmap_scanner.py");
@@ -107,9 +153,11 @@ app.post("/api/scan/nmap", async (req, res) => {
 
     if (stderr) logger.warn("Nmap stderr: %s", stderr);
     const result = JSON.parse(stdout);
+    const hostCount = result.hosts ? result.hosts.length : 0;
+    logger.scanCompleted(target, "nmap", Date.now() - t0, hostCount);
     res.json(result);
   } catch (err) {
-    logger.error("Nmap scan failed: %s", err.message);
+    logger.error("Nmap scan failed: %s", err.message, { event: "scan_error", target, scan_type: "nmap" });
     res.status(500).json({ error: err.message });
   }
 });
@@ -129,7 +177,8 @@ app.post("/api/scan/zap", async (req, res) => {
     return res.status(400).json({ error: "target_url is required" });
   }
 
-  logger.info("Starting ZAP scan for %s", target_url);
+  logger.scanStarted(target_url, "zap");
+  const t0 = Date.now();
 
   try {
     const scriptPath = path.join(__dirname, "..", "scanner", "zap_scanner.py");
@@ -142,9 +191,11 @@ app.post("/api/scan/zap", async (req, res) => {
 
     if (stderr) logger.warn("ZAP stderr: %s", stderr);
     const result = JSON.parse(stdout);
+    const vulnCount = result.vulnerabilities ? result.vulnerabilities.length : 0;
+    logger.scanCompleted(target_url, "zap", Date.now() - t0, vulnCount);
     res.json(result);
   } catch (err) {
-    logger.error("ZAP scan failed: %s", err.message);
+    logger.error("ZAP scan failed: %s", err.message, { event: "scan_error", target: target_url, scan_type: "zap" });
     res.status(500).json({ error: err.message });
   }
 });
@@ -195,7 +246,12 @@ app.post("/api/analyze", async (req, res) => {
       return res.status(404).json({ error: "No normalised data found. Run /api/normalize first." });
     }
 
+    logger.aiStarted(data.vulnerabilities.length);
+    const t0 = Date.now();
+
     const { enriched, metrics } = await analyzeVulnerabilities(data.vulnerabilities);
+
+    logger.aiCompleted(enriched.length, Date.now() - t0, metrics?.total_tokens || 0);
 
     const output = {
       generated_at: new Date().toISOString(),
@@ -298,7 +354,7 @@ app.get("/api/vulnerabilities", (_req, res) => {
 // ---------------------------------------------------------------------------
 app.post("/api/pipeline", async (req, res) => {
   try {
-    logger.info("Starting full pipeline execution...");
+    logger.info("Starting full pipeline execution...", { event: "pipeline_started" });
 
     // 1. Normalize
     const nmapData = readLatestFile(config.paths.nmapDir, "nmap_");
@@ -312,8 +368,10 @@ app.post("/api/pipeline", async (req, res) => {
     logger.info("Step 1/4: Normalized %d vulnerabilities", vulnerabilities.length);
 
     // 2. AI Analysis
+    logger.aiStarted(vulnerabilities.length);
+    const t0 = Date.now();
     const { enriched, metrics: aiMetrics } = await analyzeVulnerabilities(vulnerabilities);
-    logger.info("Step 2/4: AI analysis complete");
+    logger.aiCompleted(enriched.length, Date.now() - t0, aiMetrics?.total_tokens || 0);
 
     // 3. Compare
     const comparisonMetrics = compare(enriched, aiMetrics);
@@ -321,7 +379,7 @@ app.post("/api/pipeline", async (req, res) => {
 
     // 4. Generate Report
     const reportPath = await generateReport(enriched, comparisonMetrics, nmapData, zapData);
-    logger.info("Step 4/4: Report generated at %s", reportPath);
+    logger.info("Step 4/4: Report generated at %s", reportPath, { event: "pipeline_completed" });
 
     res.json({
       status: "complete",
@@ -330,7 +388,7 @@ app.post("/api/pipeline", async (req, res) => {
       metrics: comparisonMetrics,
     });
   } catch (err) {
-    logger.error("Pipeline failed: %s", err.message);
+    logger.error("Pipeline failed: %s", err.message, { event: "pipeline_error" });
     res.status(500).json({ error: err.message });
   }
 });
@@ -343,10 +401,10 @@ app.use((_req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// Error handler
+// Error handler — never expose stack traces to clients
 // ---------------------------------------------------------------------------
 app.use((err, _req, res, _next) => {
-  logger.error("Unhandled error: %s", err.message);
+  logger.error("Unhandled error: %s", err.message, { stack: err.stack });
   res.status(500).json({ error: "Internal server error" });
 });
 
@@ -356,7 +414,7 @@ app.use((err, _req, res, _next) => {
 if (require.main === module) {
   const port = config.server.port;
   app.listen(port, () => {
-    logger.info("AI-Assisted Pentesting API running on port %d", port);
+    logger.info("AI-Assisted Pentesting API running on port %d", port, { event: "server_started", port });
     logger.info("Endpoints: GET /health, POST /api/scan/nmap, POST /api/scan/zap,");
     logger.info("           POST /api/normalize, POST /api/analyze, POST /api/compare,");
     logger.info("           POST /api/report, POST /api/pipeline, GET /api/metrics");

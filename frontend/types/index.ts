@@ -137,3 +137,37 @@ export interface HealthResponse {
   timestamp: string;
   version: string;
 }
+
+// ---------------------------------------------------------------------------
+// Scan history (returned by GET /api/scans and GET /api/scans/:id)
+// ---------------------------------------------------------------------------
+
+/** Severity counts bundled with each scan summary row */
+export interface ScanSeveritySummary {
+  critical: number;
+  high: number;
+  medium: number;
+  low: number;
+  informational: number;
+}
+
+/** One row in the scan history table (GET /api/scans) */
+export interface ScanSummary {
+  id: string;
+  target: string;
+  /** ISO 8601 timestamp when the scan started */
+  timestamp: string;
+  /** Wall-clock duration in seconds */
+  duration: number;
+  /** Total number of vulnerabilities found */
+  vulnerability_count: number;
+  status: "complete" | "running" | "error";
+  severity_summary: ScanSeveritySummary;
+}
+
+/** Full scan detail (GET /api/scans/:id) */
+export interface ScanDetail extends ScanSummary {
+  vulnerabilities: Vulnerability[];
+  metrics: Metrics | null;
+  report_path: string | null;
+}
