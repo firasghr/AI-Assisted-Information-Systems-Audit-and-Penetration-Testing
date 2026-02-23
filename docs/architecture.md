@@ -244,7 +244,11 @@ The classifier trains two models:
 | POST | /api/report | Generate PDF report |
 | POST | /api/pipeline | Run full pipeline (normalize → analyze → compare → report) |
 | GET | /api/metrics | Retrieve latest metrics |
+| GET | /api/metrics/:scanId | Retrieve metrics for a specific scan |
 | GET | /api/vulnerabilities | Retrieve latest vulnerability list |
+| GET | /api/scans | Retrieve scan history list |
+| GET | /api/scans/:id | Retrieve full detail for a specific scan |
+| GET | /api/report/:scanId | Retrieve report metadata for a specific scan |
 
 #### Security middleware stack
 
@@ -271,19 +275,23 @@ Request
 
 ```
 app/
-├── layout.tsx              Root layout (font, theme)
+├── layout.tsx              Root layout (font, sidebar, header)
 ├── page.tsx                Landing → redirect to /dashboard
 ├── dashboard/
-│   └── page.tsx            Main dashboard (metrics, charts, scan control)
-└── history/
-    ├── page.tsx             Scan history list
-    └── [id]/
-        └── page.tsx         Scan detail view
+│   └── page.tsx            Main dashboard (scan control, metrics, charts, vuln table)
+├── history/
+│   ├── page.tsx             Scan history list
+│   └── [id]/
+│       └── page.tsx         Scan detail view
+├── reports/
+│   └── page.tsx             Report management (list + PDF download)
+└── status/
+    └── page.tsx             System health (backend status, API endpoints, auto-refresh)
 
 components/
 ├── layout/
-│   ├── Sidebar.tsx          Navigation sidebar
-│   └── Header.tsx           Top header with status
+│   ├── Sidebar.tsx          Navigation sidebar (Dashboard, History, Reports, Status)
+│   └── Header.tsx           Top header with live health status badge
 └── history/
     ├── ScanHistoryTable.tsx  History table component
     └── SeveritySummaryBadges.tsx  Severity count badges

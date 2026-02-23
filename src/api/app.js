@@ -336,6 +336,33 @@ app.get("/api/metrics", (_req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// GET /api/metrics/:scanId
+// Returns comparison metrics for a specific scan.
+// Looks for a scan-specific metrics file first (metrics_<scanId>.json), then
+// falls back to the shared metrics.json for the single-pipeline-run case.
+// ---------------------------------------------------------------------------
+app.get("/api/metrics/:scanId", (req, res) => {
+  const { scanId } = req.params;
+  if (!scanId || !/^[\w-]+$/.test(scanId)) {
+    return res.status(400).json({ error: "Invalid scanId" });
+  }
+  const dir = config.paths.processedDir;
+  // Try scan-specific file first
+  const specific = path.join(dir, `metrics_${scanId}.json`);
+  if (fs.existsSync(specific)) {
+    try {
+      return res.json(JSON.parse(fs.readFileSync(specific, "utf8")));
+    } catch { /* fall through */ }
+  }
+  // Fall back to global metrics.json
+  const metricsData = readLatestFile(dir, "metrics");
+  if (!metricsData) {
+    return res.status(404).json({ error: "No metrics found for this scan." });
+  }
+  res.json(metricsData);
+});
+
+// ---------------------------------------------------------------------------
 // GET /api/vulnerabilities
 // Returns the latest vulnerability list.
 // ---------------------------------------------------------------------------
@@ -346,6 +373,207 @@ app.get("/api/vulnerabilities", (_req, res) => {
     return res.status(404).json({ error: "No vulnerability data found." });
   }
   res.json(data);
+});
+
+// ---------------------------------------------------------------------------
+// Helper: find the PDF report closest to a given scan timestamp.
+// Each pipeline run produces one ai_analysis file and one PDF in sequence.
+// We match them by chronological index position (i-th scan → i-th report).
+// ---------------------------------------------------------------------------
+function findReportForScan(scanId, allScanIds) {
+  const reportsDir = config.paths.reportsDir || path.join(process.cwd(), "reports");
+  if (!fs.existsSync(reportsDir)) return null;
+
+  const pdfs = fs.readdirSync(reportsDir)
+    .filter((f) => f.startsWith("pentest_report_") && f.endsWith(".pdf"))
+    .sort(); // ascending chronological order
+
+  if (pdfs.length === 0) return null;
+
+  // Use the same positional index as the scan in the ordered scan list
+  const idx = allScanIds.indexOf(scanId);
+  if (idx === -1) return path.join(reportsDir, pdfs[pdfs.length - 1]);
+
+  // Clamp to available reports; later scans without reports get the newest
+  const pdfIdx = Math.min(idx, pdfs.length - 1);
+  return path.join(reportsDir, pdfs[pdfIdx]);
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/scans
+// Returns a list of all scan summaries derived from processed data files.
+// ---------------------------------------------------------------------------
+app.get("/api/scans", (_req, res) => {
+  try {
+    const dir = config.paths.processedDir;
+    if (!fs.existsSync(dir)) {
+      return res.json([]);
+    }
+
+    // Collect all ai_analysis files (one per pipeline run), sorted ascending
+    const files = fs
+      .readdirSync(dir)
+      .filter((f) => f.startsWith("ai_analysis_") && f.endsWith(".json"))
+      .sort();
+
+    // Build ordered scan ID list for positional report matching
+    const allScanIds = files.map((f) =>
+      f.replace(/^ai_analysis_/, "").replace(/\.json$/, "")
+    );
+
+    const scans = files.map((file, fileIdx) => {
+      try {
+        const data = JSON.parse(fs.readFileSync(path.join(dir, file), "utf8"));
+        const scanId = allScanIds[fileIdx];
+
+        // Count severities
+        const severityCount = { critical: 0, high: 0, medium: 0, low: 0, informational: 0 };
+        (data.vulnerabilities || []).forEach((v) => {
+          const sev = (v.severity || "informational").toLowerCase();
+          if (sev in severityCount) severityCount[sev]++;
+        });
+
+        // Try scan-specific metrics first, fall back to global
+        const metricsData = (() => {
+          try {
+            const specific = path.join(dir, `metrics_${scanId}.json`);
+            if (fs.existsSync(specific)) return JSON.parse(fs.readFileSync(specific, "utf8"));
+            const global = path.join(dir, "metrics.json");
+            return fs.existsSync(global)
+              ? JSON.parse(fs.readFileSync(global, "utf8"))
+              : null;
+          } catch { return null; }
+        })();
+
+        const reportPath = findReportForScan(scanId, allScanIds);
+
+        return {
+          id: scanId,
+          target: data.target || metricsData?.target || "unknown",
+          timestamp: data.generated_at || new Date(0).toISOString(),
+          duration: metricsData?.ai_processing_time_seconds
+            ? Math.round(metricsData.ai_processing_time_seconds)
+            : 0,
+          vulnerability_count: (data.vulnerabilities || []).length,
+          status: "complete",
+          severity_summary: severityCount,
+          report_path: reportPath,
+        };
+      } catch {
+        return null;
+      }
+    }).filter(Boolean);
+
+    res.json(scans);
+  } catch (err) {
+    logger.error("Failed to list scans: %s", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/scans/:id
+// Returns full scan detail (vulnerabilities + metrics + report path) for a
+// specific scan identified by its timestamp-based ID.
+// ---------------------------------------------------------------------------
+app.get("/api/scans/:id", (req, res) => {
+  const { id } = req.params;
+  if (!id || !/^[\w-]+$/.test(id)) {
+    return res.status(400).json({ error: "Invalid scan ID" });
+  }
+
+  try {
+    const dir = config.paths.processedDir;
+    const file = path.join(dir, `ai_analysis_${id}.json`);
+
+    if (!fs.existsSync(file)) {
+      return res.status(404).json({ error: "Scan not found." });
+    }
+
+    const data = JSON.parse(fs.readFileSync(file, "utf8"));
+
+    const severityCount = { critical: 0, high: 0, medium: 0, low: 0, informational: 0 };
+    (data.vulnerabilities || []).forEach((v) => {
+      const sev = (v.severity || "informational").toLowerCase();
+      if (sev in severityCount) severityCount[sev]++;
+    });
+
+    // Try scan-specific metrics first, fall back to global
+    const metricsData = (() => {
+      const specific = path.join(dir, `metrics_${id}.json`);
+      if (fs.existsSync(specific)) {
+        try { return JSON.parse(fs.readFileSync(specific, "utf8")); } catch { /* fall through */ }
+      }
+      return readLatestFile(dir, "metrics");
+    })();
+
+    // Build allScanIds for positional report matching
+    const allScanIds = fs.existsSync(dir)
+      ? fs.readdirSync(dir)
+          .filter((f) => f.startsWith("ai_analysis_") && f.endsWith(".json"))
+          .sort()
+          .map((f) => f.replace(/^ai_analysis_/, "").replace(/\.json$/, ""))
+      : [];
+
+    const reportPath = findReportForScan(id, allScanIds);
+
+    res.json({
+      id,
+      target: data.target || metricsData?.target || "unknown",
+      timestamp: data.generated_at || new Date(0).toISOString(),
+      duration: metricsData?.ai_processing_time_seconds
+        ? Math.round(metricsData.ai_processing_time_seconds)
+        : 0,
+      vulnerability_count: (data.vulnerabilities || []).length,
+      status: "complete",
+      severity_summary: severityCount,
+      vulnerabilities: data.vulnerabilities || [],
+      metrics: metricsData || null,
+      report_path: reportPath,
+    });
+  } catch (err) {
+    logger.error("Failed to get scan %s: %s", id, err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/report/:scanId
+// Returns report metadata (path, generated_at) for a specific scan.
+// Uses positional matching: the i-th scan corresponds to the i-th PDF report.
+// ---------------------------------------------------------------------------
+app.get("/api/report/:scanId", (req, res) => {
+  const { scanId } = req.params;
+  if (!scanId || !/^[\w-]+$/.test(scanId)) {
+    return res.status(400).json({ error: "Invalid scanId" });
+  }
+
+  try {
+    // Build ordered scan list for positional matching
+    const dir = config.paths.processedDir;
+    const allScanIds = fs.existsSync(dir)
+      ? fs.readdirSync(dir)
+          .filter((f) => f.startsWith("ai_analysis_") && f.endsWith(".json"))
+          .sort()
+          .map((f) => f.replace(/^ai_analysis_/, "").replace(/\.json$/, ""))
+      : [];
+
+    const reportPath = findReportForScan(scanId, allScanIds);
+
+    if (!reportPath) {
+      return res.status(404).json({ error: "No report available for this scan." });
+    }
+
+    const stat = fs.statSync(reportPath);
+    res.json({
+      report_path: reportPath,
+      message: "Report available.",
+      generated_at: stat.mtime.toISOString(),
+    });
+  } catch (err) {
+    logger.error("Failed to get report for scan %s: %s", scanId, err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -417,7 +645,9 @@ if (require.main === module) {
     logger.info("AI-Assisted Pentesting API running on port %d", port, { event: "server_started", port });
     logger.info("Endpoints: GET /health, POST /api/scan/nmap, POST /api/scan/zap,");
     logger.info("           POST /api/normalize, POST /api/analyze, POST /api/compare,");
-    logger.info("           POST /api/report, POST /api/pipeline, GET /api/metrics");
+    logger.info("           POST /api/report, POST /api/pipeline, GET /api/metrics,");
+    logger.info("           GET /api/vulnerabilities, GET /api/scans, GET /api/scans/:id,");
+    logger.info("           GET /api/metrics/:scanId, GET /api/report/:scanId");
   });
 }
 
