@@ -1,0 +1,22 @@
+# Python dependencies for scanner and ML modules
+# Install with: pip install -r requirements.txt
+
+# Nmap Python wrapper
+python-nmap==0.7.1
+
+# OWASP ZAP Python client
+python-owasp-zap-v2.4==0.0.21
+
+# ML and data science
+scikit-learn==1.3.2
+pandas==2.1.3
+numpy==1.26.2
+joblib==1.3.2
+
+# Logging and utilities
+python-dotenv==1.0.0
+requests==2.31.0
+
+# Testing
+pytest==7.4.3
+pytest-mock==3.12.0

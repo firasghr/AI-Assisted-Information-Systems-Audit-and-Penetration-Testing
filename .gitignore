@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+*.pyo
+.Python
+venv/
+env/
+.env
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Data outputs (keep directory structure, ignore generated files)
+data/raw/nmap/*.json
+data/raw/zap/*.json
+data/processed/*.json
+data/processed/models/
+reports/*.pdf
+
+# Logs
+logs/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Test coverage
+coverage/
+.nyc_output/
+htmlcov/
+.pytest_cache/
