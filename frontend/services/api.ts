@@ -72,8 +72,11 @@ export async function checkHealth(): Promise<HealthResponse> {
 // Start a full pipeline scan (normalize → analyze → compare → report)
 // Returns live results after the pipeline completes.
 // ---------------------------------------------------------------------------
-export async function startPipeline(): Promise<PipelineResponse> {
-  return apiFetch<PipelineResponse>("/api/pipeline", { method: "POST" });
+export async function startPipeline(target?: string): Promise<PipelineResponse> {
+  return apiFetch<PipelineResponse>("/api/pipeline", {
+    method: "POST",
+    body: target ? JSON.stringify({ target }) : undefined,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -171,4 +174,20 @@ export async function getScans(): Promise<ScanSummary[]> {
  */
 export async function getScanById(id: string): Promise<ScanDetail> {
   return apiFetch<ScanDetail>(`/api/scans/${encodeURIComponent(id)}`);
+}
+
+/**
+ * Get comparison metrics for a specific scan.
+ * Calls GET /api/scans/:id/metrics on the backend.
+ */
+export async function getScanMetrics(scanId: string): Promise<Metrics> {
+  return apiFetch<Metrics>(`/api/scans/${encodeURIComponent(scanId)}/metrics`);
+}
+
+/**
+ * Get report info for a specific scan.
+ * Calls GET /api/scans/:id/report on the backend.
+ */
+export async function getScanReport(scanId: string): Promise<Report> {
+  return apiFetch<Report>(`/api/scans/${encodeURIComponent(scanId)}/report`);
 }
