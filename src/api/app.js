@@ -22,6 +22,7 @@ const path = require("path");
 const fs = require("fs");
 const { execFile } = require("child_process");
 const { promisify } = require("util");
+const rateLimit = require("express-rate-limit");
 
 const logger = require("../utils/logger");
 const config = require("../utils/config");
@@ -34,6 +35,20 @@ const execFileAsync = promisify(execFile);
 
 const app = express();
 app.use(express.json());
+
+// ---------------------------------------------------------------------------
+// Rate limiting — required to protect system-command and filesystem endpoints
+// ---------------------------------------------------------------------------
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 60,                   // max 60 requests per window
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many requests. Please try again later." },
+});
+
+// Apply rate limiting to all /api routes
+app.use("/api", apiLimiter);
 
 // ---------------------------------------------------------------------------
 // Middleware: request logging

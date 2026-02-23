@@ -17,6 +17,7 @@ build/
 data/raw/nmap/*.json
 data/raw/zap/*.json
 data/processed/*.json
+data/processed/models/
 reports/*.pdf
 
 # Logs
