@@ -300,7 +300,7 @@ export default function DashboardPage() {
             color="text-green-600"
           />
           <MetricCard
-            label="Kendall&apos;s τ"
+            label="Kendall's τ"
             value={metrics.kendall_tau.toFixed(3)}
             sub={metrics.kendall_tau_interpretation}
             color="text-indigo-600"
