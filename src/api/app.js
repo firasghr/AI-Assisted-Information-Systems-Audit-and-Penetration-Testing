@@ -133,7 +133,7 @@ app.get("/health", (_req, res) => {
 // Body: { target, ports?, args? }
 // ---------------------------------------------------------------------------
 app.post("/api/scan/nmap", async (req, res) => {
-  const { target, ports = "1-1024", args = "-sV -O" } = req.body;
+  const { target, ports = "21,22,23,25,53,80,110,111,135,139,143,443,445,993,995,1723,3306,3389,5432,5900,6379,8080,8443,8888,27017", args = "-sV -O" } = req.body;
 
   if (!target) {
     return res.status(400).json({ error: "target is required" });
@@ -149,7 +149,7 @@ app.post("/api/scan/nmap", async (req, res) => {
       target,
       "--ports", ports,
       "--args", args,
-    ]);
+    ], { timeout: 60000 });
 
     if (stderr) logger.warn("Nmap stderr: %s", stderr);
     const result = JSON.parse(stdout);
@@ -187,7 +187,7 @@ app.post("/api/scan/zap", async (req, res) => {
       target_url,
       "--zap-url", zap_url,
       "--api-key", api_key,
-    ]);
+    ], { timeout: 120000 });
 
     if (stderr) logger.warn("ZAP stderr: %s", stderr);
     const result = JSON.parse(stdout);
@@ -215,8 +215,12 @@ app.post("/api/normalize", async (req, res) => {
 
     const vulnerabilities = normalize(nmapData, zapData);
 
+    // Extract target from raw scan data so it persists through the pipeline
+    const scanTarget = nmapData?.target || zapData?.target || null;
+
     const output = {
       generated_at: new Date().toISOString(),
+      target: scanTarget,
       total_vulnerabilities: vulnerabilities.length,
       vulnerabilities,
     };
@@ -255,6 +259,7 @@ app.post("/api/analyze", async (req, res) => {
 
     const output = {
       generated_at: new Date().toISOString(),
+      target: data.target || null,
       metrics,
       total_vulnerabilities: enriched.length,
       vulnerabilities: enriched,
@@ -445,11 +450,36 @@ app.get("/api/scans", (_req, res) => {
           } catch { return null; }
         })();
 
+        // Extract target: prefer explicit field, fall back to raw scan data or first affected_asset
+        const resolvedTarget = data.target
+          || metricsData?.target
+          || (() => {
+            // Try to find target from the matching raw nmap/zap scan files
+            try {
+              const nmapFiles = fs.existsSync(config.paths.nmapDir)
+                ? fs.readdirSync(config.paths.nmapDir).filter(f => f.endsWith(".json")).sort().reverse()
+                : [];
+              const zapFiles = fs.existsSync(config.paths.zapDir)
+                ? fs.readdirSync(config.paths.zapDir).filter(f => f.endsWith(".json")).sort().reverse()
+                : [];
+              // Match by positional index (same as report matching)
+              const rawFile = nmapFiles[fileIdx] || zapFiles[fileIdx];
+              if (rawFile) {
+                const rawDir = nmapFiles[fileIdx] ? config.paths.nmapDir : config.paths.zapDir;
+                const raw = JSON.parse(fs.readFileSync(path.join(rawDir, rawFile), "utf8"));
+                if (raw.target) return raw.target;
+              }
+            } catch { /* ignore */ }
+            // Last resort: first affected_asset from vulnerabilities
+            const firstVuln = (data.vulnerabilities || [])[0];
+            return firstVuln?.affected_asset || "unknown";
+          })();
+
         const reportPath = findReportForScan(scanId, allScanIds);
 
         return {
           id: scanId,
-          target: data.target || metricsData?.target || "unknown",
+          target: resolvedTarget,
           timestamp: data.generated_at || new Date(0).toISOString(),
           duration: metricsData?.ai_processing_time_seconds
             ? Math.round(metricsData.ai_processing_time_seconds)
@@ -517,9 +547,32 @@ app.get("/api/scans/:id", (req, res) => {
 
     const reportPath = findReportForScan(id, allScanIds);
 
+    // Resolve target: prefer explicit field, fall back to raw scan data or first affected_asset
+    const resolvedTarget = data.target
+      || metricsData?.target
+      || (() => {
+        try {
+          const nmapFiles = fs.existsSync(config.paths.nmapDir)
+            ? fs.readdirSync(config.paths.nmapDir).filter(f => f.endsWith(".json")).sort()
+            : [];
+          const zapFiles = fs.existsSync(config.paths.zapDir)
+            ? fs.readdirSync(config.paths.zapDir).filter(f => f.endsWith(".json")).sort()
+            : [];
+          const idx = allScanIds.indexOf(id);
+          const rawFile = nmapFiles[idx] || zapFiles[idx];
+          if (rawFile) {
+            const rawDir = nmapFiles[idx] ? config.paths.nmapDir : config.paths.zapDir;
+            const raw = JSON.parse(fs.readFileSync(path.join(rawDir, rawFile), "utf8"));
+            if (raw.target) return raw.target;
+          }
+        } catch { /* ignore */ }
+        const firstVuln = (data.vulnerabilities || [])[0];
+        return firstVuln?.affected_asset || "unknown";
+      })();
+
     res.json({
       id,
-      target: data.target || metricsData?.target || "unknown",
+      target: resolvedTarget,
       timestamp: data.generated_at || new Date(0).toISOString(),
       duration: metricsData?.ai_processing_time_seconds
         ? Math.round(metricsData.ai_processing_time_seconds)
@@ -533,6 +586,72 @@ app.get("/api/scans/:id", (req, res) => {
     });
   } catch (err) {
     logger.error("Failed to get scan %s: %s", id, err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/report/download?path=<relative_or_absolute_path>
+// Serves the PDF file directly for download.
+// ---------------------------------------------------------------------------
+app.get("/api/report/download", (req, res) => {
+  const { path: reportPath } = req.query;
+  if (!reportPath || typeof reportPath !== "string") {
+    return res.status(400).json({ error: "path query parameter is required" });
+  }
+
+  // Resolve the path — accept both absolute and relative (to project root)
+  const resolved = path.isAbsolute(reportPath)
+    ? reportPath
+    : path.join(process.cwd(), reportPath);
+
+  // Security: ensure the resolved path is inside the reports directory
+  const reportsDir = path.resolve(config.paths.reportsDir || path.join(process.cwd(), "reports"));
+  const normalised = path.resolve(resolved);
+  if (!normalised.startsWith(reportsDir)) {
+    return res.status(403).json({ error: "Access denied" });
+  }
+
+  if (!fs.existsSync(normalised)) {
+    return res.status(404).json({ error: "Report file not found" });
+  }
+
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", `attachment; filename="${path.basename(normalised)}"`);
+  fs.createReadStream(normalised).pipe(res);
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/report/:scanId/download
+// Serves the PDF report for a specific scan directly for download.
+// ---------------------------------------------------------------------------
+app.get("/api/report/:scanId/download", (req, res) => {
+  const { scanId } = req.params;
+  if (!scanId || !/^[\w\-:.]+$/.test(scanId)) {
+    return res.status(400).json({ error: "Invalid scanId" });
+  }
+
+  try {
+    // Build ordered scan list for positional matching
+    const dir = config.paths.processedDir;
+    const allScanIds = fs.existsSync(dir)
+      ? fs.readdirSync(dir)
+          .filter((f) => f.startsWith("ai_analysis_") && f.endsWith(".json"))
+          .sort()
+          .map((f) => f.replace(/^ai_analysis_/, "").replace(/\.json$/, ""))
+      : [];
+
+    const reportPath = findReportForScan(scanId, allScanIds);
+
+    if (!reportPath || !fs.existsSync(reportPath)) {
+      return res.status(404).json({ error: "No report available for this scan." });
+    }
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="${path.basename(reportPath)}"`);
+    fs.createReadStream(reportPath).pipe(res);
+  } catch (err) {
+    logger.error("Failed to download report for scan %s: %s", scanId, err.message);
     res.status(500).json({ error: err.message });
   }
 });

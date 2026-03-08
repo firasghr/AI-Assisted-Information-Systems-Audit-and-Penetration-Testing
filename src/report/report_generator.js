@@ -2,28 +2,18 @@
  * report_generator.js - Professional PDF report generator using PDFKit.
  *
  * Generates a structured penetration testing report covering:
- *   1.  Executive Summary
- *   2.  Scope
- *   3.  Methodology
- *   4.  Tools Used
- *   5.  Findings (Traditional CVSS-based)
- *   6.  Findings (AI-Assisted)
- *   7.  Risk Comparison Table
- *   8.  Recommendations
- *   9.  Conclusion
- *   10. Appendix (Raw Data Reference)
- *
- * Design decisions:
- *   - PDFKit is used because it provides a programmatic, code-driven API
- *     that is easy to version-control and integrate into a CI/CD pipeline.
- *   - Severity colours follow industry conventions:
- *       Critical: #8B0000 (dark red)
- *       High:     #CC3300
- *       Medium:   #FF8800
- *       Low:      #2255CC
- *       Info:     #444444
- *   - Each section starts on a new page for readability.
- *   - Tables are drawn using PDFKit primitives for maximum portability.
+ *   1.  Cover Page
+ *   2.  Table of Contents
+ *   3.  Executive Summary
+ *   4.  Scope & Engagement Details
+ *   5.  Methodology
+ *   6.  Tools Used
+ *   7.  Findings — Traditional CVSS-based
+ *   8.  Findings — AI-Assisted
+ *   9.  Risk Comparison (AI vs Traditional)
+ *   10. Recommendations
+ *   11. Conclusion
+ *   12. Appendix
  */
 
 "use strict";
@@ -36,545 +26,867 @@ const logger = require("../utils/logger");
 const config = require("../utils/config");
 
 // ---------------------------------------------------------------------------
-// Constants
+// Design Tokens
 // ---------------------------------------------------------------------------
-const SEVERITY_COLORS = {
-  critical:      "#8B0000",
-  high:          "#CC3300",
-  medium:        "#FF8800",
-  low:           "#2255CC",
-  informational: "#444444",
+const COLORS = {
+  navy:       "#0F172A",
+  darkSlate:  "#1E293B",
+  slate600:   "#475569",
+  slate400:   "#94A3B8",
+  slate200:   "#E2E8F0",
+  slate50:    "#F8FAFC",
+  white:      "#FFFFFF",
+  blue600:    "#2563EB",
+  blue100:    "#DBEAFE",
+  accent:     "#3B82F6",
+  critical:   "#DC2626",
+  high:       "#EA580C",
+  medium:     "#CA8A04",
+  low:        "#16A34A",
+  info:       "#64748B",
 };
 
-const PAGE_MARGIN = 50;
-const PAGE_WIDTH = 595.28; // A4 width in points
+const SEVERITY_COLORS = {
+  critical:      COLORS.critical,
+  high:          COLORS.high,
+  medium:        COLORS.medium,
+  low:           COLORS.low,
+  informational: COLORS.info,
+};
+
+const PAGE_MARGIN = 54;
+const PAGE_WIDTH = 595.28;   // A4
+const PAGE_HEIGHT = 841.89;  // A4
 const CONTENT_WIDTH = PAGE_WIDTH - 2 * PAGE_MARGIN;
+const FOOTER_Y = PAGE_HEIGHT - 36;
 
 // ---------------------------------------------------------------------------
-// Helper: Ensure directory exists
+// Helpers
 // ---------------------------------------------------------------------------
 function ensureDir(dirPath) {
-  if (!fs.existsSync(dirPath)) {
-    fs.mkdirSync(dirPath, { recursive: true });
-  }
+  if (!fs.existsSync(dirPath)) fs.mkdirSync(dirPath, { recursive: true });
+}
+
+function safeStr(val, fallback) {
+  fallback = fallback || "N/A";
+  if (val === null || val === undefined) return fallback;
+  return String(val);
+}
+
+function truncate(str, len) {
+  if (!str) return "";
+  return str.length > len ? str.substring(0, len - 1) + "..." : str;
 }
 
 // ---------------------------------------------------------------------------
-// PDF drawing helpers
+// Page-level helpers
 // ---------------------------------------------------------------------------
 
-/** Add a full-width horizontal rule */
-function hr(doc, y) {
-  const _y = y !== undefined ? y : doc.y;
-  doc.save().moveTo(PAGE_MARGIN, _y).lineTo(PAGE_WIDTH - PAGE_MARGIN, _y)
-    .lineWidth(0.5).strokeColor("#CCCCCC").stroke().restore();
-  doc.moveDown(0.3);
+/** Add page footer with page number and classification */
+function addFooter(doc, pageNum) {
+  doc.save();
+  doc.moveTo(PAGE_MARGIN, FOOTER_Y - 8)
+     .lineTo(PAGE_WIDTH - PAGE_MARGIN, FOOTER_Y - 8)
+     .lineWidth(0.4).strokeColor(COLORS.slate200).stroke();
+  doc.font("Helvetica").fontSize(7).fillColor(COLORS.slate400)
+     .text("CONFIDENTIAL - AI-Assisted Penetration Testing Report", PAGE_MARGIN, FOOTER_Y, { lineBreak: false });
+  doc.text("Page " + pageNum, PAGE_WIDTH - PAGE_MARGIN - 60, FOOTER_Y, { width: 60, align: "right", lineBreak: false });
+  doc.restore();
 }
 
-/** Section heading */
-function sectionTitle(doc, text) {
+/** Start a new section page with title */
+function sectionPage(doc, title, pageCounter) {
   doc.addPage();
-  doc
-    .font("Helvetica-Bold")
-    .fontSize(16)
-    .fillColor("#1A1A2E")
-    .text(text, PAGE_MARGIN, PAGE_MARGIN + 20);
-  doc.moveDown(0.5);
-  hr(doc);
+  pageCounter.n++;
+
+  // Blue accent bar at top
+  doc.save()
+     .rect(PAGE_MARGIN, PAGE_MARGIN, 4, 22).fill(COLORS.accent)
+     .restore();
+
+  doc.font("Helvetica-Bold").fontSize(18).fillColor(COLORS.navy)
+     .text(title, PAGE_MARGIN + 14, PAGE_MARGIN + 1);
+
+  doc.moveDown(0.4);
+
+  // Separator line
+  doc.save()
+     .moveTo(PAGE_MARGIN, doc.y)
+     .lineTo(PAGE_WIDTH - PAGE_MARGIN, doc.y)
+     .lineWidth(0.6).strokeColor(COLORS.slate200).stroke()
+     .restore();
+
+  doc.moveDown(0.6);
+  addFooter(doc, pageCounter.n);
 }
 
-/** Subsection heading */
-function subsectionTitle(doc, text) {
+/** Sub-section heading */
+function subHeading(doc, text) {
+  checkPageSpace(doc, 40);
   doc.moveDown(0.5);
-  doc.font("Helvetica-Bold").fontSize(12).fillColor("#1A1A2E").text(text);
-  doc.moveDown(0.3);
+  doc.font("Helvetica-Bold").fontSize(12).fillColor(COLORS.darkSlate).text(text);
+  doc.moveDown(0.25);
 }
 
 /** Body paragraph */
-function bodyText(doc, text) {
-  doc.font("Helvetica").fontSize(10).fillColor("#333333").text(text, { align: "justify" });
-  doc.moveDown(0.4);
+function body(doc, text) {
+  doc.font("Helvetica").fontSize(9.5).fillColor(COLORS.slate600)
+     .text(text, { align: "justify", lineGap: 2 });
+  doc.moveDown(0.3);
 }
 
-/** Coloured severity badge text */
-function severityText(doc, severity) {
-  const color = SEVERITY_COLORS[severity] || "#444444";
-  const label = (severity || "unknown").toUpperCase();
-  doc.font("Helvetica-Bold").fontSize(9).fillColor(color).text(label, { continued: false });
-  doc.fillColor("#333333");
+/** Key-value line */
+function kv(doc, key, value) {
+  doc.font("Helvetica-Bold").fontSize(9.5).fillColor(COLORS.darkSlate)
+     .text(key + ":  ", { continued: true });
+  doc.font("Helvetica").fillColor(COLORS.slate600).text(safeStr(value));
 }
 
-/** Simple two-column key-value line */
-function kvLine(doc, key, value) {
-  doc.font("Helvetica-Bold").fontSize(10).fillColor("#333333").text(`${key}: `, { continued: true });
-  doc.font("Helvetica").text(String(value || "N/A"));
+/** Horizontal rule */
+function hr(doc) {
+  var y = doc.y;
+  doc.save()
+     .moveTo(PAGE_MARGIN, y)
+     .lineTo(PAGE_WIDTH - PAGE_MARGIN, y)
+     .lineWidth(0.3).strokeColor(COLORS.slate200).stroke()
+     .restore();
+  doc.moveDown(0.3);
 }
 
-/**
- * Draw a table.
- * @param {PDFDocument} doc
- * @param {string[]} headers
- * @param {string[][]} rows
- * @param {number[]} colWidths - Column widths in points (must sum ≤ CONTENT_WIDTH)
- * @param {function} [cellColor] - Optional function(row, col) => color string
- */
-function drawTable(doc, headers, rows, colWidths, cellColor) {
-  const rowHeight = 18;
-  const startX = PAGE_MARGIN;
-  let y = doc.y;
+/** Check remaining space and add page if needed */
+function checkPageSpace(doc, needed) {
+  if (doc.y + needed > PAGE_HEIGHT - PAGE_MARGIN - 50) {
+    doc.addPage();
+  }
+}
 
-  // Helper to draw a single row
-  function drawRow(cells, isHeader, rowIdx) {
-    const bgColor = isHeader ? "#1A1A2E" : rowIdx % 2 === 0 ? "#F8F8F8" : "#FFFFFF";
-    const textColor = isHeader ? "#FFFFFF" : "#333333";
+// ---------------------------------------------------------------------------
+// Table drawing - production quality with zebra rows, proper overflow
+// ---------------------------------------------------------------------------
+function drawTable(doc, headers, rows, colWidths, opts) {
+  opts = opts || {};
+  var headerBg = opts.headerBg || COLORS.navy;
+  var headerFg = opts.headerFg || COLORS.white;
+  var zebraA = opts.zebraA || COLORS.white;
+  var zebraB = opts.zebraB || COLORS.slate50;
+  var fontSize = opts.fontSize || 8;
+  var rowPadding = opts.rowPadding || 5;
+  var cellColor = opts.cellColor || null;
+  var startX = PAGE_MARGIN;
 
-    let x = startX;
-    let maxHeight = rowHeight;
-
-    // Measure text heights first
-    const heights = cells.map((cell, ci) => {
-      const w = colWidths[ci] - 8;
-      const h = doc.heightOfString(String(cell || ""), { width: w, fontSize: 9 });
-      return Math.max(rowHeight, h + 8);
+  function measureRowHeight(cells) {
+    var heights = cells.map(function(cell, ci) {
+      var w = colWidths[ci] - 8;
+      return doc.heightOfString(safeStr(cell), { width: w, fontSize: fontSize }) + 2 * rowPadding;
     });
-    maxHeight = Math.max(...heights);
-
-    // Check for page overflow
-    if (y + maxHeight > doc.page.height - PAGE_MARGIN) {
-      doc.addPage();
-      y = PAGE_MARGIN;
+    var max = 18;
+    for (var i = 0; i < heights.length; i++) {
+      if (heights[i] > max) max = heights[i];
     }
-
-    // Draw cells
-    cells.forEach((cell, ci) => {
-      const w = colWidths[ci];
-      const fg = cellColor ? (cellColor(rowIdx, ci) || textColor) : textColor;
-
-      doc.save()
-        .rect(x, y, w, maxHeight)
-        .fill(bgColor)
-        .restore();
-
-      // Cell border
-      doc.save()
-        .rect(x, y, w, maxHeight)
-        .lineWidth(0.3)
-        .strokeColor("#CCCCCC")
-        .stroke()
-        .restore();
-
-      doc.save()
-        .font(isHeader ? "Helvetica-Bold" : "Helvetica")
-        .fontSize(9)
-        .fillColor(fg)
-        .text(String(cell || ""), x + 4, y + 4, { width: w - 8, height: maxHeight - 4, ellipsis: true });
-      doc.restore();
-
-      x += w;
-    });
-
-    y += maxHeight;
+    return max;
   }
 
-  drawRow(headers, true, -1);
-  rows.forEach((row, i) => drawRow(row, false, i));
+  function drawRow(cells, y, isHeader, rowIdx) {
+    var h = measureRowHeight(cells);
+    var x = startX;
 
-  doc.y = y + 4;
+    for (var ci = 0; ci < cells.length; ci++) {
+      var cell = cells[ci];
+      var w = colWidths[ci];
+      var bg = isHeader ? headerBg : rowIdx % 2 === 0 ? zebraA : zebraB;
+      var fg;
+      if (cellColor && !isHeader) {
+        fg = cellColor(rowIdx, ci) || COLORS.slate600;
+      } else if (isHeader) {
+        fg = headerFg;
+      } else {
+        fg = COLORS.slate600;
+      }
+
+      // Background
+      doc.save().rect(x, y, w, h).fill(bg).restore();
+      // Border
+      doc.save().rect(x, y, w, h).lineWidth(0.3).strokeColor(COLORS.slate200).stroke().restore();
+      // Text
+      doc.save()
+         .font(isHeader ? "Helvetica-Bold" : "Helvetica")
+         .fontSize(fontSize)
+         .fillColor(fg)
+         .text(safeStr(cell), x + 4, y + rowPadding, {
+           width: w - 8, height: h - rowPadding, ellipsis: true,
+         });
+      doc.restore();
+      x += w;
+    }
+
+    return h;
+  }
+
+  var y = doc.y;
+
+  // Header
+  if (y + 20 > PAGE_HEIGHT - PAGE_MARGIN - 50) { doc.addPage(); y = PAGE_MARGIN; }
+  var headerH = drawRow(headers, y, true, -1);
+  y += headerH;
+
+  // Data rows
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i];
+    var h = measureRowHeight(row);
+    if (y + h > PAGE_HEIGHT - PAGE_MARGIN - 50) {
+      doc.addPage();
+      y = PAGE_MARGIN;
+      var hh = drawRow(headers, y, true, -1);
+      y += hh;
+    }
+    var rh = drawRow(row, y, false, i);
+    y += rh;
+  }
+
+  doc.y = y + 6;
 }
 
 // ---------------------------------------------------------------------------
-// Cover page
+// Stat box - small rounded rectangle with label + value
 // ---------------------------------------------------------------------------
-function addCoverPage(doc, reportMeta) {
-  doc
-    .rect(0, 0, PAGE_WIDTH, 280)
-    .fill("#1A1A2E");
+function statBox(doc, x, y, w, h, label, value, color) {
+  doc.save().roundedRect(x, y, w, h, 4).fill(COLORS.slate50).restore();
+  doc.save().rect(x, y, 3, h).fill(color).restore();
+  doc.save().font("Helvetica").fontSize(7).fillColor(COLORS.slate400)
+     .text(label, x + 10, y + 6, { width: w - 14 });
+  doc.restore();
+  doc.save().font("Helvetica-Bold").fontSize(14).fillColor(COLORS.darkSlate)
+     .text(safeStr(value), x + 10, y + 18, { width: w - 14 });
+  doc.restore();
+}
 
-  doc
-    .font("Helvetica-Bold")
-    .fontSize(24)
-    .fillColor("#FFFFFF")
-    .text("AI-Assisted Information Systems", PAGE_MARGIN, 80, { align: "center", width: CONTENT_WIDTH })
-    .text("Audit and Penetration Testing", { align: "center" });
+// ---------------------------------------------------------------------------
+// Cover Page
+// ---------------------------------------------------------------------------
+function addCoverPage(doc, meta) {
+  // Full-width navy header block
+  doc.rect(0, 0, PAGE_WIDTH, 320).fill(COLORS.navy);
 
-  doc
-    .font("Helvetica")
-    .fontSize(14)
-    .fillColor("#A0C4FF")
-    .text("Security Assessment Report", { align: "center" });
+  // Accent line
+  doc.save()
+     .moveTo(PAGE_MARGIN, 60).lineTo(PAGE_MARGIN + 60, 60)
+     .lineWidth(3).strokeColor(COLORS.accent).stroke()
+     .restore();
 
-  doc.moveDown(2);
+  doc.font("Helvetica-Bold").fontSize(28).fillColor(COLORS.white)
+     .text("Security Assessment", PAGE_MARGIN, 78, { width: CONTENT_WIDTH });
+  doc.font("Helvetica-Bold").fontSize(28).fillColor(COLORS.accent)
+     .text("Report", PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
 
-  doc
-    .font("Helvetica")
-    .fontSize(11)
-    .fillColor("#FFFFFF")
-    .text(`Target: ${reportMeta.target || "Not specified"}`, { align: "center" })
-    .text(`Date: ${new Date(reportMeta.timestamp || Date.now()).toDateString()}`, { align: "center" })
-    .text(`Classification: CONFIDENTIAL`, { align: "center" });
+  doc.moveDown(1.2);
+  doc.font("Helvetica").fontSize(12).fillColor(COLORS.slate200)
+     .text("AI-Assisted Information Systems Audit", PAGE_MARGIN)
+     .text("& Penetration Testing Platform", PAGE_MARGIN);
 
-  doc.y = 310;
-  doc
-    .font("Helvetica")
-    .fontSize(10)
-    .fillColor("#555555")
-    .text("This report was generated by the AI-Assisted Pentesting System.", PAGE_MARGIN, 310, { align: "center", width: CONTENT_WIDTH })
-    .text("Handle in accordance with your organisation's information security policy.", { align: "center" });
+  doc.moveDown(1.5);
+  var metaY = doc.y;
+  doc.font("Helvetica").fontSize(9).fillColor(COLORS.slate400);
+  doc.text("TARGET", PAGE_MARGIN, metaY);
+  doc.font("Helvetica-Bold").fontSize(11).fillColor(COLORS.white);
+  doc.text(meta.target || "Not specified", PAGE_MARGIN, metaY + 12);
+
+  doc.font("Helvetica").fontSize(9).fillColor(COLORS.slate400);
+  doc.text("DATE", PAGE_MARGIN + 250, metaY);
+  doc.font("Helvetica-Bold").fontSize(11).fillColor(COLORS.white);
+  doc.text(new Date(meta.timestamp || Date.now()).toLocaleDateString("en-US", {
+    year: "numeric", month: "long", day: "numeric",
+  }), PAGE_MARGIN + 250, metaY + 12);
+
+  // Classification ribbon
+  doc.save().rect(0, 300, PAGE_WIDTH, 20).fill(COLORS.accent).restore();
+  doc.font("Helvetica-Bold").fontSize(8).fillColor(COLORS.white)
+     .text("CLASSIFICATION: CONFIDENTIAL", PAGE_MARGIN, 305, { width: CONTENT_WIDTH, align: "center" });
+
+  // Lower section
+  doc.y = 360;
+  doc.font("Helvetica").fontSize(9).fillColor(COLORS.slate600)
+     .text("This report was generated by the AI-Assisted Penetration Testing System.", PAGE_MARGIN, 360, {
+       width: CONTENT_WIDTH, align: "center",
+     });
+  doc.text("Handle in accordance with your organisation's information security policy.", {
+    align: "center",
+  });
+
+  doc.moveDown(3);
+
+  // Disclaimer box
+  var disclaimerY = doc.y;
+  doc.save()
+     .roundedRect(PAGE_MARGIN, disclaimerY, CONTENT_WIDTH, 65, 4)
+     .fill(COLORS.slate50)
+     .restore();
+  doc.font("Helvetica-Bold").fontSize(8).fillColor(COLORS.darkSlate)
+     .text("DISCLAIMER", PAGE_MARGIN + 12, disclaimerY + 10);
+  doc.font("Helvetica").fontSize(7.5).fillColor(COLORS.slate600)
+     .text(
+       "This report contains sensitive security information. Unauthorised disclosure may cause harm. " +
+       "Distribution is restricted to authorised personnel only. The findings represent a point-in-time " +
+       "assessment and do not guarantee ongoing security posture.",
+       PAGE_MARGIN + 12, doc.y + 2, { width: CONTENT_WIDTH - 24 }
+     );
 }
 
 // ---------------------------------------------------------------------------
 // Table of Contents
 // ---------------------------------------------------------------------------
-function addToc(doc) {
+function addToc(doc, pageCounter) {
   doc.addPage();
-  doc.font("Helvetica-Bold").fontSize(16).fillColor("#1A1A2E").text("Table of Contents", PAGE_MARGIN, PAGE_MARGIN + 20);
-  hr(doc);
+  pageCounter.n++;
+  addFooter(doc, pageCounter.n);
 
-  const sections = [
-    "1. Executive Summary",
-    "2. Scope",
-    "3. Methodology",
-    "4. Tools Used",
-    "5. Traditional Findings",
-    "6. AI-Assisted Findings",
-    "7. Risk Comparison",
-    "8. Recommendations",
-    "9. Conclusion",
-    "10. Appendix",
+  doc.font("Helvetica-Bold").fontSize(18).fillColor(COLORS.navy)
+     .text("Table of Contents", PAGE_MARGIN, PAGE_MARGIN + 10);
+  doc.moveDown(1);
+
+  var sections = [
+    { num: "01", title: "Executive Summary" },
+    { num: "02", title: "Scope & Engagement Details" },
+    { num: "03", title: "Methodology" },
+    { num: "04", title: "Tools Used" },
+    { num: "05", title: "Traditional Findings (CVSS)" },
+    { num: "06", title: "AI-Assisted Findings" },
+    { num: "07", title: "Risk Comparison" },
+    { num: "08", title: "Recommendations" },
+    { num: "09", title: "Conclusion" },
+    { num: "10", title: "Appendix" },
   ];
 
-  doc.moveDown(0.5);
-  sections.forEach((s) => {
-    doc.font("Helvetica").fontSize(11).fillColor("#333333").text(s, PAGE_MARGIN);
-    doc.moveDown(0.3);
-  });
+  for (var i = 0; i < sections.length; i++) {
+    var s = sections[i];
+    var y = doc.y;
+    doc.font("Helvetica-Bold").fontSize(10).fillColor(COLORS.accent)
+       .text(s.num, PAGE_MARGIN, y, { continued: false });
+    doc.font("Helvetica").fontSize(10).fillColor(COLORS.darkSlate)
+       .text(s.title, PAGE_MARGIN + 30, y);
+
+    var lineY = y + 6;
+    var titleEndX = PAGE_MARGIN + 30 + doc.widthOfString(s.title) + 8;
+    doc.save();
+    for (var x = titleEndX; x < PAGE_WIDTH - PAGE_MARGIN - 4; x += 4) {
+      doc.circle(x, lineY, 0.5).fill(COLORS.slate200);
+    }
+    doc.restore();
+
+    doc.moveDown(0.7);
+  }
 }
 
 // ---------------------------------------------------------------------------
-// Section builders
+// 1. Executive Summary
 // ---------------------------------------------------------------------------
+function addExecutiveSummary(doc, vulnerabilities, metrics, pageCounter) {
+  sectionPage(doc, "01  Executive Summary", pageCounter);
 
-function addExecutiveSummary(doc, vulnerabilities, metrics) {
-  sectionTitle(doc, "1. Executive Summary");
+  var total = vulnerabilities.length;
+  var critCount = vulnerabilities.filter(function(v) { return v.severity === "critical"; }).length;
+  var highCount = vulnerabilities.filter(function(v) { return v.severity === "high"; }).length;
+  var medCount = vulnerabilities.filter(function(v) { return v.severity === "medium"; }).length;
+  var lowCount = vulnerabilities.filter(function(v) { return v.severity === "low"; }).length;
+  var infoCount = vulnerabilities.filter(function(v) { return v.severity === "informational"; }).length;
+  var fpCount = (metrics && metrics.false_positives_detected_count) || 0;
+  var timeSaved = (metrics && metrics.time_saved_seconds) || 0;
 
-  const highCritical = vulnerabilities.filter((v) => ["high", "critical"].includes(v.severity)).length;
-  const fpCount = metrics?.false_positives_detected_count || 0;
-  const timeSaved = metrics?.time_saved_seconds || 0;
-
-  bodyText(doc,
-    `This penetration testing engagement identified ${vulnerabilities.length} unique security findings ` +
-    `across the target environment. Of these, ${highCritical} are rated High or Critical severity and ` +
-    `require immediate remediation. The assessment employed both traditional CVSS-based analysis and ` +
-    `AI-assisted prioritisation to provide comprehensive risk context.`
+  body(doc,
+    "This penetration testing engagement identified " + total + " unique security findings across the " +
+    "target environment. Of these, " + (critCount + highCount) + " are rated High or Critical severity and " +
+    "require immediate attention. The assessment employed both traditional CVSS-based analysis and " +
+    "AI-assisted prioritisation (GPT-4o) to provide comprehensive risk context."
   );
 
-  bodyText(doc,
-    `The AI analysis module detected ${fpCount} probable false positives, improving signal quality for ` +
-    `the security team. Compared to manual review, AI-assisted prioritisation saved an estimated ` +
-    `${Math.round(timeSaved / 60)} minutes of analyst time, representing a ` +
-    `${metrics?.time_saved_percent || 0}% reduction in analysis overhead.`
+  body(doc,
+    "The AI analysis module detected " + fpCount + " probable false positive(s), improving signal quality " +
+    "for the security team. Compared to manual review, AI-assisted prioritisation saved an estimated " +
+    Math.round(timeSaved / 60) + " minute(s) of analyst time, representing a " +
+    ((metrics && metrics.time_saved_percent) || 0).toFixed(1) + "% reduction in analysis overhead."
   );
 
-  subsectionTitle(doc, "Key Findings at a Glance");
-  const dist = metrics?.severity_distribution || {};
-  const rows = [
-    ["Critical", dist.critical || 0],
-    ["High",     dist.high     || 0],
-    ["Medium",   dist.medium   || 0],
-    ["Low",      dist.low      || 0],
-    ["Informational", dist.informational || 0],
-  ].map(([s, c]) => [s, String(c)]);
+  doc.moveDown(0.3);
 
-  drawTable(doc, ["Severity", "Count"], rows, [200, 100],
-    (row, col) => col === 0 ? (SEVERITY_COLORS[rows[row]?.[0]?.toLowerCase()] || "#333333") : null
-  );
+  // Severity stat boxes
+  var boxW = (CONTENT_WIDTH - 4 * 8) / 5;
+  var boxY = doc.y;
+  var boxes = [
+    { label: "CRITICAL", value: critCount, color: COLORS.critical },
+    { label: "HIGH",     value: highCount, color: COLORS.high },
+    { label: "MEDIUM",   value: medCount,  color: COLORS.medium },
+    { label: "LOW",      value: lowCount,  color: COLORS.low },
+    { label: "INFO",     value: infoCount, color: COLORS.info },
+  ];
+
+  for (var i = 0; i < boxes.length; i++) {
+    var b = boxes[i];
+    var x = PAGE_MARGIN + i * (boxW + 8);
+    statBox(doc, x, boxY, boxW, 42, b.label, b.value, b.color);
+  }
+
+  doc.y = boxY + 52;
+
+  // Key metrics row
+  subHeading(doc, "Assessment Metrics");
+  var metricsBoxW = (CONTENT_WIDTH - 3 * 8) / 4;
+  var mBoxY = doc.y;
+  var mBoxes = [
+    { label: "TOTAL FINDINGS",  value: total,                                                  color: COLORS.accent },
+    { label: "KENDALL'S TAU",   value: (metrics && metrics.kendall_tau != null) ? metrics.kendall_tau.toFixed(3) : "N/A", color: COLORS.accent },
+    { label: "TIME SAVED",      value: ((metrics && metrics.time_saved_percent) || 0).toFixed(0) + "%", color: COLORS.low },
+    { label: "FALSE POSITIVES", value: fpCount,                                                 color: COLORS.high },
+  ];
+
+  for (var j = 0; j < mBoxes.length; j++) {
+    var mb = mBoxes[j];
+    var mx = PAGE_MARGIN + j * (metricsBoxW + 8);
+    statBox(doc, mx, mBoxY, metricsBoxW, 42, mb.label, mb.value, mb.color);
+  }
+
+  doc.y = mBoxY + 52;
 }
 
-function addScope(doc, reportMeta) {
-  sectionTitle(doc, "2. Scope");
-  bodyText(doc, "The following assets were included in the scope of this security assessment:");
-  kvLine(doc, "Primary Target", reportMeta.target);
-  kvLine(doc, "Scan Type", "Network (Nmap) + Web Application (OWASP ZAP)");
-  kvLine(doc, "Start Time", new Date(reportMeta.timestamp || Date.now()).toISOString());
-  kvLine(doc, "Authorisation", "This assessment was conducted under formal written authorisation.");
+// ---------------------------------------------------------------------------
+// 2. Scope
+// ---------------------------------------------------------------------------
+function addScope(doc, meta, pageCounter) {
+  sectionPage(doc, "02  Scope & Engagement Details", pageCounter);
+
+  body(doc, "The following assets and parameters defined the scope of this security assessment:");
+  doc.moveDown(0.2);
+
+  kv(doc, "Primary Target", meta.target);
+  kv(doc, "Assessment Type", "Network (Nmap) + Web Application (OWASP ZAP)");
+  kv(doc, "Assessment Date", new Date(meta.timestamp || Date.now()).toISOString());
+  kv(doc, "Authorisation", "Conducted under formal written authorisation");
+  kv(doc, "Classification", "CONFIDENTIAL");
 
   doc.moveDown(0.5);
-  bodyText(doc,
+  body(doc,
     "The scope was limited to the specified target addresses. All scanning was performed from a " +
     "dedicated assessment host. No lateral movement or post-exploitation activities were conducted " +
-    "beyond those explicitly scoped."
+    "beyond those explicitly scoped. Testing was non-destructive and designed to identify " +
+    "vulnerabilities without causing service disruption."
   );
 }
 
-function addMethodology(doc) {
-  sectionTitle(doc, "3. Methodology");
+// ---------------------------------------------------------------------------
+// 3. Methodology
+// ---------------------------------------------------------------------------
+function addMethodology(doc, pageCounter) {
+  sectionPage(doc, "03  Methodology", pageCounter);
 
-  bodyText(doc,
+  body(doc,
     "This assessment followed the Penetration Testing Execution Standard (PTES) and the OWASP " +
     "Testing Guide v4.2. The engagement was structured in five phases:"
   );
 
-  const phases = [
-    ["1. Reconnaissance", "Passive information gathering and OSINT collection."],
-    ["2. Scanning & Enumeration", "Active port scanning, service discovery, and OS fingerprinting using Nmap."],
-    ["3. Web Application Testing", "Automated active scanning using OWASP ZAP to identify OWASP Top 10 vulnerabilities."],
-    ["4. AI Risk Analysis", "Normalised findings submitted to GPT-4o for prioritisation, exploitability assessment, and remediation guidance."],
-    ["5. Reporting", "Generation of this structured report with comparison of traditional vs AI-assisted analysis."],
+  var phases = [
+    ["Phase 1 -- Reconnaissance", "Passive information gathering, DNS enumeration, and OSINT collection to identify the target's attack surface."],
+    ["Phase 2 -- Scanning & Enumeration", "Active TCP connect scanning using Nmap against common ports, service version detection, and OS fingerprinting."],
+    ["Phase 3 -- Web Application Testing", "Automated active scanning using OWASP ZAP to identify OWASP Top 10 vulnerabilities, security header misconfigurations, and sensitive information exposure."],
+    ["Phase 4 -- AI Risk Analysis", "Normalised findings submitted to GPT-4o for contextual prioritisation, exploitability assessment, false positive detection, and remediation guidance."],
+    ["Phase 5 -- Reporting", "Generation of this structured report with statistical comparison of traditional CVSS-based vs AI-assisted analysis rankings."],
   ];
 
-  phases.forEach(([phase, desc]) => {
-    subsectionTitle(doc, phase);
-    bodyText(doc, desc);
-  });
+  for (var i = 0; i < phases.length; i++) {
+    checkPageSpace(doc, 50);
+    subHeading(doc, phases[i][0]);
+    body(doc, phases[i][1]);
+  }
 
-  bodyText(doc,
-    "AI Threat Model: The AI analysis layer uses a large language model (LLM) to enrich findings with " +
-    "contextual intelligence. Potential limitations include training data cutoff, hallucination risk, " +
-    "and lack of target-specific business context. All AI outputs were post-processed and validated."
+  doc.moveDown(0.3);
+  subHeading(doc, "AI Model Limitations");
+  body(doc,
+    "The AI analysis layer uses a large language model (LLM) to enrich findings with contextual " +
+    "intelligence. Limitations include training data cutoff, potential for hallucination, and lack " +
+    "of target-specific business context. All AI outputs were programmatically validated and " +
+    "cross-referenced against the original scan data."
   );
 }
 
-function addTools(doc) {
-  sectionTitle(doc, "4. Tools Used");
+// ---------------------------------------------------------------------------
+// 4. Tools
+// ---------------------------------------------------------------------------
+function addTools(doc, pageCounter) {
+  sectionPage(doc, "04  Tools Used", pageCounter);
 
-  const tools = [
-    ["Nmap 7.x", "Network scanner", "Port scanning, service detection, OS fingerprinting"],
-    ["OWASP ZAP 2.x", "Web application proxy", "Active web vulnerability scanning"],
-    ["GPT-4o (OpenAI)", "Large Language Model", "AI-assisted prioritisation and risk analysis"],
-    ["Python 3.x", "Scripting language", "Scanner automation and ML classifier"],
-    ["Node.js 18+", "Backend runtime", "Normalisation, API, and report generation"],
-    ["scikit-learn", "ML library", "Exploitability classifier training and evaluation"],
+  var tools = [
+    ["Nmap 7.x",             "Network Scanner",        "Port scanning, service detection, OS fingerprinting"],
+    ["OWASP ZAP 2.x",        "Web Application Proxy",  "Active web vulnerability scanning"],
+    ["GPT-4o (OpenAI)",       "Large Language Model",   "AI-assisted prioritisation and risk analysis"],
+    ["Python 3.x",           "Automation Runtime",      "Scanner automation and ML classification"],
+    ["Node.js 18+",          "Backend Runtime",         "Normalisation, comparison, and report generation"],
+    ["PDFKit",               "Report Engine",           "Programmatic PDF generation"],
   ];
 
-  drawTable(
-    doc,
-    ["Tool", "Category", "Purpose"],
-    tools,
-    [120, 130, 240]
-  );
+  drawTable(doc, ["Tool", "Category", "Purpose"], tools, [130, 120, CONTENT_WIDTH - 250]);
 }
 
-function addFindings(doc, vulnerabilities, isAi = false) {
-  const title = isAi ? "6. AI-Assisted Findings" : "5. Traditional Findings (CVSS-based)";
-  sectionTitle(doc, title);
+// ---------------------------------------------------------------------------
+// 5 & 6. Findings
+// ---------------------------------------------------------------------------
+function addFindings(doc, vulnerabilities, isAi, pageCounter) {
+  var num = isAi ? "06" : "05";
+  var title = isAi ? (num + "  AI-Assisted Findings") : (num + "  Traditional Findings (CVSS)");
+  sectionPage(doc, title, pageCounter);
 
   if (!vulnerabilities || vulnerabilities.length === 0) {
-    bodyText(doc, "No findings to display.");
+    body(doc, "No findings to display for this section.");
     return;
   }
 
-  // Sort appropriately
-  const sorted = isAi
-    ? [...vulnerabilities].sort((a, b) => (a.ai_analysis?.priority_rank || 99) - (b.ai_analysis?.priority_rank || 99))
-    : [...vulnerabilities].sort((a, b) => b.cvss_score - a.cvss_score);
+  var sorted;
+  if (isAi) {
+    sorted = vulnerabilities.slice().sort(function(a, b) {
+      return ((a.ai_analysis && a.ai_analysis.priority_rank) || 99) - ((b.ai_analysis && b.ai_analysis.priority_rank) || 99);
+    });
+  } else {
+    sorted = vulnerabilities.slice().sort(function(a, b) { return b.cvss_score - a.cvss_score; });
+  }
 
-  // Display top 15 in the report body; rest are in appendix
-  const displayed = sorted.slice(0, 15);
+  var displayed = sorted.slice(0, 15);
 
-  displayed.forEach((v, idx) => {
-    if (idx > 0) doc.moveDown(0.5);
+  for (var idx = 0; idx < displayed.length; idx++) {
+    var v = displayed[idx];
+    checkPageSpace(doc, 90);
+    if (idx > 0) { hr(doc); doc.moveDown(0.2); }
 
-    const rank = isAi ? (v.ai_analysis?.priority_rank || idx + 1) : idx + 1;
-    const score = isAi ? (v.ai_analysis?.ai_risk_score || v.cvss_score) : v.cvss_score;
+    var rank = isAi ? ((v.ai_analysis && v.ai_analysis.priority_rank) || idx + 1) : idx + 1;
+    var score = isAi ? ((v.ai_analysis && v.ai_analysis.ai_risk_score) || v.cvss_score) : v.cvss_score;
+    var sevColor = SEVERITY_COLORS[v.severity] || COLORS.info;
 
-    doc.font("Helvetica-Bold").fontSize(11).fillColor("#1A1A2E")
-      .text(`#${rank} — ${v.title}`);
+    // Finding header with severity accent
+    var headerY = doc.y;
+    doc.save().rect(PAGE_MARGIN, headerY, 3, 16).fill(sevColor).restore();
+
+    doc.font("Helvetica-Bold").fontSize(10.5).fillColor(COLORS.navy)
+       .text("#" + rank + "  " + v.title, PAGE_MARGIN + 10, headerY + 1);
+
     doc.moveDown(0.2);
 
-    const color = SEVERITY_COLORS[v.severity] || "#333333";
-    doc.font("Helvetica-Bold").fontSize(9).fillColor(color)
-      .text(`${(v.severity || "").toUpperCase()}  |  Score: ${score.toFixed(1)}  |  Asset: ${v.affected_asset}  |  Source: ${v.source}`, { continued: false });
-    doc.fillColor("#333333");
+    // Metadata line
+    doc.font("Helvetica-Bold").fontSize(8).fillColor(sevColor)
+       .text((v.severity || "").toUpperCase(), PAGE_MARGIN + 10, doc.y, { continued: true });
+    doc.font("Helvetica").fillColor(COLORS.slate400)
+       .text("   |   Score: " + score.toFixed(1) + "   |   Asset: " + (v.affected_asset || "N/A") + "   |   Source: " + (v.source || "N/A") + "   |   Confidence: " + (v.confidence || "N/A"));
+
     doc.moveDown(0.2);
 
-    doc.font("Helvetica").fontSize(9).fillColor("#444444")
-      .text(v.description ? v.description.substring(0, 400) : "No description.", { align: "justify" });
-
-    if (isAi && v.ai_analysis) {
-      doc.moveDown(0.2);
-      doc.font("Helvetica-Oblique").fontSize(9).fillColor("#555555")
-        .text(`AI Remediation: ${(v.ai_analysis.remediation || "").substring(0, 300)}`);
-      if (v.ai_analysis.false_positive_probability > 0.3) {
-        doc.font("Helvetica-Oblique").fontSize(9).fillColor("#888800")
-          .text(`⚠ Possible False Positive (probability: ${(v.ai_analysis.false_positive_probability * 100).toFixed(0)}%): ${v.ai_analysis.false_positive_reason}`);
-        doc.fillColor("#333333");
-      }
+    // Description
+    if (v.description) {
+      doc.font("Helvetica").fontSize(9).fillColor(COLORS.slate600)
+         .text(truncate(v.description, 450), PAGE_MARGIN + 10, doc.y, {
+           width: CONTENT_WIDTH - 14, align: "justify", lineGap: 1.5,
+         });
     }
 
-    hr(doc);
-  });
+    // AI enrichment block
+    if (isAi && v.ai_analysis) {
+      doc.moveDown(0.2);
+      var aiY = doc.y;
+
+      var remediation = v.ai_analysis.remediation || "";
+      var impact = v.ai_analysis.business_impact || "N/A";
+      var exploit = v.ai_analysis.exploitability_score ? v.ai_analysis.exploitability_score.toFixed(1) : "N/A";
+      var fpProb = v.ai_analysis.false_positive_probability || 0;
+
+      doc.font("Helvetica-Bold").fontSize(8).fillColor(COLORS.accent)
+         .text("AI ANALYSIS", PAGE_MARGIN + 14, aiY + 2);
+      doc.font("Helvetica").fontSize(8).fillColor(COLORS.slate600)
+         .text("Exploitability: " + exploit + "/10   |   Business Impact: " + impact + "   |   FP Probability: " + (fpProb * 100).toFixed(0) + "%", PAGE_MARGIN + 14, doc.y + 1);
+
+      if (remediation) {
+        doc.moveDown(0.15);
+        doc.font("Helvetica-Oblique").fontSize(8).fillColor(COLORS.slate600)
+           .text("Remediation: " + truncate(remediation, 350), PAGE_MARGIN + 14, doc.y, {
+             width: CONTENT_WIDTH - 28, lineGap: 1,
+           });
+      }
+
+      if (fpProb > 0.3) {
+        doc.moveDown(0.1);
+        doc.font("Helvetica-Bold").fontSize(8).fillColor(COLORS.medium)
+           .text("! Possible False Positive (" + (fpProb * 100).toFixed(0) + "%): " + truncate(v.ai_analysis.false_positive_reason || "", 200), PAGE_MARGIN + 14, doc.y, { width: CONTENT_WIDTH - 28 });
+      }
+
+      // Draw border around AI block
+      var blockH = doc.y - aiY + 8;
+      doc.save()
+         .roundedRect(PAGE_MARGIN + 10, aiY - 2, CONTENT_WIDTH - 14, blockH, 3)
+         .lineWidth(0.5).strokeColor(COLORS.blue100).stroke()
+         .restore();
+
+      doc.y = aiY + blockH + 2;
+    }
+
+    doc.moveDown(0.2);
+  }
 
   if (sorted.length > 15) {
-    bodyText(doc, `... and ${sorted.length - 15} additional findings. See Appendix for full list.`);
+    doc.moveDown(0.3);
+    body(doc, "... and " + (sorted.length - 15) + " additional finding(s). See Appendix for the complete list.");
   }
 }
 
-function addComparison(doc, metrics) {
-  sectionTitle(doc, "7. Risk Comparison: Traditional vs AI-Assisted");
+// ---------------------------------------------------------------------------
+// 7. Comparison
+// ---------------------------------------------------------------------------
+function addComparison(doc, metrics, pageCounter) {
+  sectionPage(doc, "07  Risk Comparison: Traditional vs AI", pageCounter);
 
   if (!metrics) {
-    bodyText(doc, "No comparison metrics available.");
+    body(doc, "No comparison metrics available.");
     return;
   }
 
-  subsectionTitle(doc, "Statistical Summary");
-  kvLine(doc, "Total Vulnerabilities Analysed", metrics.total_vulnerabilities);
-  kvLine(doc, "Kendall's τ (Rank Correlation)", `${metrics.kendall_tau} — ${metrics.kendall_tau_interpretation}`);
-  kvLine(doc, "Divergent Rankings", `${metrics.divergent_rankings_count} (${metrics.divergent_rankings_percent}%)`);
-  kvLine(doc, "False Positives Detected (AI)", metrics.false_positives_detected_count);
-  kvLine(doc, "Probable False Positives", metrics.false_positives_probable_count);
-  kvLine(doc, "Traditional Estimated Time", `${Math.round(metrics.traditional_estimated_time_seconds / 60)} min`);
-  kvLine(doc, "AI Processing Time", `${metrics.ai_processing_time_seconds.toFixed(1)}s`);
-  kvLine(doc, "Time Saved", `${Math.round(metrics.time_saved_seconds / 60)} min (${metrics.time_saved_percent}%)`);
-  kvLine(doc, "Average CVSS Score", metrics.avg_cvss_score);
-  kvLine(doc, "Average AI Risk Score", metrics.avg_ai_risk_score);
+  subHeading(doc, "Statistical Summary");
+
+  kv(doc, "Total Vulnerabilities Analysed", metrics.total_vulnerabilities);
+  kv(doc, "Kendall's Tau (Rank Correlation)", (metrics.kendall_tau != null ? metrics.kendall_tau.toFixed(3) : "N/A") + " -- " + (metrics.kendall_tau_interpretation || ""));
+  kv(doc, "Divergent Rankings", (metrics.divergent_rankings_count || 0) + " (" + (metrics.divergent_rankings_percent || 0).toFixed(1) + "%)");
+  kv(doc, "False Positives Detected (AI)", metrics.false_positives_detected_count);
+  kv(doc, "Probable False Positives", metrics.false_positives_probable_count);
+  kv(doc, "Traditional Estimated Time", Math.round((metrics.traditional_estimated_time_seconds || 0) / 60) + " min");
+  kv(doc, "AI Processing Time", (metrics.ai_processing_time_seconds || 0).toFixed(1) + "s");
+  kv(doc, "Time Saved", Math.round((metrics.time_saved_seconds || 0) / 60) + " min (" + (metrics.time_saved_percent || 0).toFixed(1) + "%)");
+  kv(doc, "Average CVSS Score", (metrics.avg_cvss_score || 0).toFixed(2));
+  kv(doc, "Average AI Risk Score", (metrics.avg_ai_risk_score || 0).toFixed(2));
 
   doc.moveDown(0.5);
-  subsectionTitle(doc, "Ranking Comparison Table (Top 15)");
+  subHeading(doc, "Ranking Comparison Table (Top 15)");
 
-  const rows = (metrics.ranking_comparison || []).slice(0, 15).map((r) => [
-    r.title?.substring(0, 40) || "",
-    String(r.traditional_rank),
-    String(r.ai_rank),
-    r.rank_change > 0 ? `↑${r.rank_change}` : r.rank_change < 0 ? `↓${Math.abs(r.rank_change)}` : "—",
-    r.cvss_score?.toFixed(1) || "0.0",
-    r.ai_risk_score?.toFixed(1) || "0.0",
-  ]);
+  var ranking = (metrics.ranking_comparison || []).slice(0, 15);
+  var rows = [];
+  for (var i = 0; i < ranking.length; i++) {
+    var r = ranking[i];
+    var change;
+    if (r.rank_change > 0) { change = "^ " + r.rank_change; }
+    else if (r.rank_change < 0) { change = "v " + Math.abs(r.rank_change); }
+    else { change = "--"; }
+    rows.push([
+      truncate(r.title, 38),
+      String(r.traditional_rank),
+      String(r.ai_rank),
+      change,
+      (r.cvss_score || 0).toFixed(1),
+      (r.ai_risk_score || 0).toFixed(1),
+    ]);
+  }
 
-  drawTable(
-    doc,
-    ["Finding", "Trad.", "AI", "Δ", "CVSS", "AI Score"],
+  drawTable(doc,
+    ["Finding", "CVSS Rank", "AI Rank", "Change", "CVSS", "AI Score"],
     rows,
-    [190, 40, 40, 40, 50, 60]
+    [185, 52, 48, 48, 42, 52],
+    {
+      cellColor: function(row, col) {
+        if (col === 3 && rows[row]) {
+          var ch = rows[row][3];
+          if (ch && ch.indexOf("^") >= 0) return COLORS.low;
+          if (ch && ch.indexOf("v") >= 0) return COLORS.high;
+        }
+        return null;
+      }
+    }
   );
 }
 
-function addRecommendations(doc, vulnerabilities) {
-  sectionTitle(doc, "8. Recommendations");
+// ---------------------------------------------------------------------------
+// 8. Recommendations
+// ---------------------------------------------------------------------------
+function addRecommendations(doc, vulnerabilities, pageCounter) {
+  sectionPage(doc, "08  Recommendations", pageCounter);
 
-  bodyText(doc, "The following remediation actions are recommended, ordered by AI-assisted priority:");
+  body(doc, "The following remediation actions are recommended, ordered by AI-assisted priority ranking:");
 
-  const highPriority = vulnerabilities
-    .filter((v) => v.ai_analysis?.priority_rank)
-    .sort((a, b) => a.ai_analysis.priority_rank - b.ai_analysis.priority_rank)
+  var highPriority = vulnerabilities
+    .filter(function(v) { return v.ai_analysis && v.ai_analysis.priority_rank; })
+    .sort(function(a, b) { return a.ai_analysis.priority_rank - b.ai_analysis.priority_rank; })
     .slice(0, 10);
 
-  highPriority.forEach((v, i) => {
-    subsectionTitle(doc, `${i + 1}. ${v.title}`);
-    bodyText(doc, v.ai_analysis?.remediation || "Refer to vendor advisories and security best practices.");
-  });
+  if (highPriority.length === 0) {
+    body(doc, "No AI-enriched recommendations available. Refer to vendor advisories and security best practices for each identified finding.");
+    return;
+  }
+
+  for (var i = 0; i < highPriority.length; i++) {
+    var v = highPriority[i];
+    checkPageSpace(doc, 50);
+    var sevColor = SEVERITY_COLORS[v.severity] || COLORS.info;
+
+    doc.font("Helvetica-Bold").fontSize(10).fillColor(COLORS.darkSlate)
+       .text((i + 1) + ". " + v.title, PAGE_MARGIN);
+
+    doc.font("Helvetica-Bold").fontSize(8).fillColor(sevColor)
+       .text((v.severity || "").toUpperCase() + "  |  CVSS: " + (v.cvss_score || 0).toFixed(1) + "  |  AI Score: " + ((v.ai_analysis && v.ai_analysis.ai_risk_score) || 0).toFixed(1), PAGE_MARGIN + 10, doc.y);
+
+    doc.moveDown(0.15);
+    body(doc, (v.ai_analysis && v.ai_analysis.remediation) || "Refer to vendor advisories and security best practices.");
+    doc.moveDown(0.1);
+  }
 }
 
-function addConclusion(doc, metrics) {
-  sectionTitle(doc, "9. Conclusion");
+// ---------------------------------------------------------------------------
+// 9. Conclusion
+// ---------------------------------------------------------------------------
+function addConclusion(doc, metrics, pageCounter) {
+  sectionPage(doc, "09  Conclusion", pageCounter);
 
-  bodyText(doc,
-    "This assessment demonstrates the synergy between traditional penetration testing techniques " +
-    "and AI-assisted analysis. While CVSS-based scoring provides a standardised baseline, the LLM " +
-    "analysis layer adds contextual depth that enables more effective prioritisation."
+  body(doc,
+    "This assessment demonstrates the value of combining traditional penetration testing techniques " +
+    "with AI-assisted analysis. While CVSS-based scoring provides a standardised severity baseline, " +
+    "the AI analysis layer adds contextual depth -- including exploitability assessment, business impact " +
+    "evaluation, and false positive detection -- that enables more effective vulnerability prioritisation."
   );
 
-  bodyText(doc,
-    `With a Kendall's τ of ${metrics?.kendall_tau || "N/A"}, the AI ranking diverged meaningfully ` +
-    `from the traditional CVSS ordering, underscoring that numeric severity scores alone are ` +
-    `insufficient to capture real-world exploitability and business risk.`
+  body(doc,
+    "With a Kendall's Tau of " + ((metrics && metrics.kendall_tau) || 0).toFixed(3) + ", the AI ranking diverged meaningfully " +
+    "from the traditional CVSS ordering, highlighting " + ((metrics && metrics.divergent_rankings_count) || 0) + " ranking " +
+    "differences. This demonstrates that numeric severity scores alone are insufficient to capture " +
+    "real-world exploitability and business risk."
   );
 
-  bodyText(doc,
-    "Future work should include authenticated web application testing, integration with SIEM " +
-    "platforms, and longitudinal trending of vulnerability counts over multiple scan cycles."
+  body(doc,
+    "The AI module identified probable false positives that would otherwise consume analyst time during " +
+    "remediation planning. This automated triage capability represents a significant efficiency gain " +
+    "for security operations teams dealing with high-volume vulnerability data."
   );
 
-  subsectionTitle(doc, "Ethical and Legal Considerations");
-  bodyText(doc,
-    "This assessment was conducted under formal written authorisation. All scanning activities " +
-    "were performed in accordance with applicable laws including the Computer Fraud and Abuse Act " +
-    "(US), Computer Misuse Act (UK), and equivalent national legislation. AI-generated analysis " +
-    "was reviewed by a qualified human analyst before inclusion in this report."
+  subHeading(doc, "Future Work");
+  body(doc,
+    "Recommended next steps include: authenticated web application testing, integration with SIEM " +
+    "and ticketing platforms, longitudinal vulnerability trending across multiple scan cycles, and " +
+    "expansion of the ML exploitability classifier training dataset."
+  );
+
+  subHeading(doc, "Ethical & Legal Considerations");
+  body(doc,
+    "This assessment was conducted under formal written authorisation. All scanning activities were " +
+    "performed in accordance with applicable laws. AI-generated analysis was programmatically " +
+    "validated before inclusion in this report. No data was transmitted to third parties beyond " +
+    "the OpenAI API calls required for vulnerability analysis."
   );
 }
 
-function addAppendix(doc, vulnerabilities, nmapRaw, zapRaw) {
-  sectionTitle(doc, "10. Appendix");
+// ---------------------------------------------------------------------------
+// 10. Appendix
+// ---------------------------------------------------------------------------
+function addAppendix(doc, vulnerabilities, nmapRaw, zapRaw, pageCounter) {
+  sectionPage(doc, "10  Appendix", pageCounter);
 
-  subsectionTitle(doc, "A. Full Vulnerability List");
-  const rows = vulnerabilities.map((v, i) => [
-    String(i + 1),
-    v.title?.substring(0, 45) || "",
-    v.severity || "",
-    String(v.cvss_score?.toFixed(1) || "0.0"),
-    v.affected_asset?.substring(0, 30) || "",
-  ]);
+  subHeading(doc, "A. Complete Vulnerability List");
 
-  drawTable(doc, ["#", "Title", "Severity", "CVSS", "Asset"], rows, [30, 220, 70, 50, 120]);
+  var rows = [];
+  for (var i = 0; i < vulnerabilities.length; i++) {
+    var v = vulnerabilities[i];
+    rows.push([
+      String(i + 1),
+      truncate(v.title, 42),
+      (v.severity || "").toUpperCase(),
+      (v.cvss_score || 0).toFixed(1),
+      (v.ai_analysis && v.ai_analysis.ai_risk_score) ? v.ai_analysis.ai_risk_score.toFixed(1) : "--",
+      truncate(v.affected_asset, 28),
+    ]);
+  }
 
-  subsectionTitle(doc, "B. Scan Metadata");
+  drawTable(doc,
+    ["#", "Title", "Severity", "CVSS", "AI", "Asset"],
+    rows,
+    [24, 200, 60, 40, 36, CONTENT_WIDTH - 360],
+    {
+      cellColor: function(row, col) {
+        if (col === 2 && vulnerabilities[row]) {
+          return SEVERITY_COLORS[(vulnerabilities[row].severity || "").toLowerCase()] || null;
+        }
+        return null;
+      },
+    }
+  );
+
+  checkPageSpace(doc, 120);
+  doc.moveDown(0.5);
+  subHeading(doc, "B. Scan Metadata");
+
   if (nmapRaw) {
-    kvLine(doc, "Nmap Scan ID", nmapRaw.scan_id || "N/A");
-    kvLine(doc, "Nmap Target", nmapRaw.target || "N/A");
-    kvLine(doc, "Nmap Execution Time", `${nmapRaw.execution_time_seconds || 0}s`);
+    kv(doc, "Nmap Scan ID", nmapRaw.scan_id);
+    kv(doc, "Nmap Target", nmapRaw.target);
+    kv(doc, "Nmap Ports Scanned", nmapRaw.ports_scanned);
+    kv(doc, "Nmap Execution Time", (nmapRaw.execution_time_seconds || 0).toFixed(1) + "s");
+    kv(doc, "Hosts Discovered", nmapRaw.hosts_scanned || (nmapRaw.hosts || []).length);
+    doc.moveDown(0.3);
   }
   if (zapRaw) {
-    kvLine(doc, "ZAP Scan ID", zapRaw.scan_id || "N/A");
-    kvLine(doc, "ZAP Target", zapRaw.target || "N/A");
-    kvLine(doc, "ZAP Execution Time", `${zapRaw.execution_time_seconds || 0}s`);
-    kvLine(doc, "ZAP Total Alerts", zapRaw.total_alerts || 0);
+    kv(doc, "ZAP Scan ID", zapRaw.scan_id);
+    kv(doc, "ZAP Target", zapRaw.target);
+    kv(doc, "ZAP Execution Time", (zapRaw.execution_time_seconds || 0).toFixed(1) + "s");
+    kv(doc, "ZAP Total Alerts", zapRaw.total_alerts);
+    kv(doc, "ZAP Unique Vulnerabilities", zapRaw.unique_vulnerabilities);
   }
+
+  checkPageSpace(doc, 60);
+  doc.moveDown(0.5);
+  subHeading(doc, "C. Report Generation");
+  kv(doc, "Generated At", new Date().toISOString());
+  kv(doc, "Generator", "AI-Assisted Pentesting Platform v1.0");
+  kv(doc, "AI Model", "GPT-4o (OpenAI)");
+  kv(doc, "Report Engine", "PDFKit (Node.js)");
 }
 
 // ---------------------------------------------------------------------------
-// Main report generation function
+// Main
 // ---------------------------------------------------------------------------
 async function generateReport(vulnerabilities, metrics, nmapRaw, zapRaw) {
-  const reportsDir = config.paths.reportsDir;
+  var reportsDir = config.paths.reportsDir;
   ensureDir(reportsDir);
 
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const outputPath = path.join(reportsDir, `pentest_report_${timestamp}.pdf`);
+  var timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  var outputPath = path.join(reportsDir, "pentest_report_" + timestamp + ".pdf");
 
-  const target = nmapRaw?.target || zapRaw?.target || "Multiple targets";
-  const reportMeta = {
-    target,
-    timestamp: new Date().toISOString(),
-  };
+  var target = (nmapRaw && nmapRaw.target) || (zapRaw && zapRaw.target) || "Multiple targets";
+  var meta = { target: target, timestamp: new Date().toISOString() };
 
   logger.info("Generating PDF report to %s...", outputPath);
 
-  return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({
+  return new Promise(function(resolve, reject) {
+    var doc = new PDFDocument({
       size: "A4",
       margins: { top: PAGE_MARGIN, bottom: PAGE_MARGIN, left: PAGE_MARGIN, right: PAGE_MARGIN },
+      bufferPages: true,
       info: {
-        Title: "Penetration Testing Report",
+        Title: "Security Assessment Report - " + target,
         Author: "AI-Assisted Pentesting System",
-        Subject: "Security Assessment",
+        Subject: "Penetration Testing Report",
+        Keywords: "penetration testing, security assessment, AI, CVSS",
       },
     });
 
-    const stream = fs.createWriteStream(outputPath);
+    var stream = fs.createWriteStream(outputPath);
     doc.pipe(stream);
 
+    var pageCounter = { n: 1 };
+
     try {
-      addCoverPage(doc, reportMeta);
-      addToc(doc);
-      addExecutiveSummary(doc, vulnerabilities, metrics);
-      addScope(doc, reportMeta);
-      addMethodology(doc);
-      addTools(doc);
-      addFindings(doc, vulnerabilities, false);
-      addFindings(doc, vulnerabilities, true);
-      addComparison(doc, metrics);
-      addRecommendations(doc, vulnerabilities);
-      addConclusion(doc, metrics);
-      addAppendix(doc, vulnerabilities, nmapRaw, zapRaw);
+      addCoverPage(doc, meta);
+      addToc(doc, pageCounter);
+      addExecutiveSummary(doc, vulnerabilities, metrics, pageCounter);
+      addScope(doc, meta, pageCounter);
+      addMethodology(doc, pageCounter);
+      addTools(doc, pageCounter);
+      addFindings(doc, vulnerabilities, false, pageCounter);
+      addFindings(doc, vulnerabilities, true, pageCounter);
+      addComparison(doc, metrics, pageCounter);
+      addRecommendations(doc, vulnerabilities, pageCounter);
+      addConclusion(doc, metrics, pageCounter);
+      addAppendix(doc, vulnerabilities, nmapRaw, zapRaw, pageCounter);
     } catch (err) {
       doc.end();
       return reject(err);
     }
 
     doc.end();
-    stream.on("finish", () => {
-      logger.info("Report generated: %s (%d bytes)", outputPath, fs.statSync(outputPath).size);
+    stream.on("finish", function() {
+      var size = fs.statSync(outputPath).size;
+      logger.info("Report generated: %s (%d bytes, %d pages)", outputPath, size, pageCounter.n);
       resolve(outputPath);
     });
     stream.on("error", reject);
@@ -586,8 +898,8 @@ async function generateReport(vulnerabilities, metrics, nmapRaw, zapRaw) {
 // ---------------------------------------------------------------------------
 function readLatestFile(dir, prefix) {
   if (!fs.existsSync(dir)) return null;
-  const files = fs.readdirSync(dir)
-    .filter((f) => f.startsWith(prefix) && f.endsWith(".json"))
+  var files = fs.readdirSync(dir)
+    .filter(function(f) { return f.startsWith(prefix) && f.endsWith(".json"); })
     .sort().reverse();
   if (!files.length) return null;
   return JSON.parse(fs.readFileSync(path.join(dir, files[0]), "utf8"));
@@ -597,25 +909,22 @@ function readLatestFile(dir, prefix) {
 // CLI entry point
 // ---------------------------------------------------------------------------
 async function main() {
-  const aiData = readLatestFile(config.paths.processedDir, "ai_analysis_");
-  const metrics = readLatestFile(config.paths.processedDir, "metrics") ||
-                  readLatestFile(config.paths.processedDir, "metrics.");
-  const nmapRaw = readLatestFile(config.paths.nmapDir, "nmap_");
-  const zapRaw = readLatestFile(config.paths.zapDir, "zap_");
+  var aiData = readLatestFile(config.paths.processedDir, "ai_analysis_");
+  var metricsData = readLatestFile(config.paths.processedDir, "metrics");
+  var nmapRaw = readLatestFile(config.paths.nmapDir, "nmap_");
+  var zapRaw = readLatestFile(config.paths.zapDir, "zap_");
 
   if (!aiData) {
     logger.error("No AI analysis data found. Run ai_analyzer.js first.");
     process.exit(1);
   }
 
-  const metricsData = readLatestFile(config.paths.processedDir, "metrics");
-
-  const outPath = await generateReport(aiData.vulnerabilities, metricsData, nmapRaw, zapRaw);
-  console.log(`Report saved: ${outPath}`);
+  var outPath = await generateReport(aiData.vulnerabilities, metricsData, nmapRaw, zapRaw);
+  console.log("Report saved: " + outPath);
 }
 
 if (require.main === module) {
-  main().catch((err) => {
+  main().catch(function(err) {
     logger.error("Report generation failed:", err);
     process.exit(1);
   });

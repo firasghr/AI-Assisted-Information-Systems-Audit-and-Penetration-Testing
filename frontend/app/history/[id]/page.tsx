@@ -226,12 +226,10 @@ export default function ScanDetailPage() {
           {/* Report download */}
           {scan.report_path && (
             <a
-              href={`${BASE_URL}/reports/${encodeURIComponent(
-                scan.report_path.split("/").pop() ?? ""
-              )}`}
+              href={`${BASE_URL}/api/report/${encodeURIComponent(scan.id)}/download`}
               target="_blank"
               rel="noreferrer"
-              className="inline-flex shrink-0 items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 transition-colors"
+              className="inline-flex shrink-0 items-center gap-2 rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 transition-colors shadow-sm"
             >
               <Download className="h-4 w-4" />
               Download PDF Report

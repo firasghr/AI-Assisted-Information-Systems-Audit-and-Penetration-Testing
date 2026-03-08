@@ -84,12 +84,10 @@ export async function startPipeline(target?: string): Promise<PipelineResponse> 
 // ---------------------------------------------------------------------------
 export async function startNmapScan(
   target: string,
-  ports = "1-1024",
-  args = "-sV -O"
 ): Promise<unknown> {
   return apiFetch("/api/scan/nmap", {
     method: "POST",
-    body: JSON.stringify({ target, ports, args }),
+    body: JSON.stringify({ target }),
   });
 }
 

@@ -1,25 +1,21 @@
 /**
  * app/history/page.tsx
  *
- * Scan History page — lists all past scans with target, timestamp, duration,
- * vulnerability count, severity breakdown, status and a link to the detail view.
- *
- * Data is fetched from GET /api/scans via the centralised API service.
- * Falls back gracefully when the backend has no scan-history endpoint yet.
+ * Scan History page — lists all past scans with consistent UI.
  */
 
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { RefreshCw, History } from "lucide-react";
+import { RefreshCw, History, ShieldAlert, Clock, CheckCircle2 } from "lucide-react";
 import type { ScanSummary } from "@/types";
 import { getScans } from "@/services/api";
 import ScanHistoryTable from "@/components/history/ScanHistoryTable";
 
 export default function HistoryPage() {
-  const [scans, setScans]     = useState<ScanSummary[]>([]);
+  const [scans, setScans] = useState<ScanSummary[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError]     = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [lastFetched, setLastFetched] = useState<Date | null>(null);
 
   const fetchScans = useCallback(async () => {
@@ -27,10 +23,7 @@ export default function HistoryPage() {
     setError(null);
     try {
       const data = await getScans();
-      // Sort newest first
-      setScans([...data].sort(
-        (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
-      ));
+      setScans([...data].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()));
       setLastFetched(new Date());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load scan history");
@@ -39,25 +32,25 @@ export default function HistoryPage() {
     }
   }, []);
 
-  useEffect(() => {
-    fetchScans();
-  }, [fetchScans]);
+  useEffect(() => { fetchScans(); }, [fetchScans]);
+
+  const completedCount = scans.filter((s) => s.status === "complete").length;
+  const totalVulns = scans.reduce((sum, s) => sum + s.vulnerability_count, 0);
+  const avgDuration = scans.length
+    ? `${Math.round(scans.reduce((s, x) => s + x.duration, 0) / scans.length)}s`
+    : "—";
 
   return (
-    <div className="min-h-screen bg-slate-50 p-6 md:p-8">
-      {/* ------------------------------------------------------------------ */}
-      {/* Page header                                                         */}
-      {/* ------------------------------------------------------------------ */}
-      <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+    <div className="p-6 space-y-6 max-w-screen-2xl mx-auto">
+      {/* Page header */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-slate-900">
-            <History className="h-5 w-5 text-white" />
+          <div className="rounded-lg bg-blue-100 p-2.5">
+            <History className="h-5 w-5 text-blue-600" />
           </div>
           <div>
-            <h1 className="text-xl font-bold text-slate-900">Scan History</h1>
-            <p className="text-sm text-slate-500">
-              All past penetration test runs and their results
-            </p>
+            <h1 className="text-lg font-semibold text-slate-800">Scan History</h1>
+            <p className="text-xs text-slate-400">All past penetration test runs and their results</p>
           </div>
         </div>
 
@@ -70,7 +63,7 @@ export default function HistoryPage() {
           <button
             onClick={fetchScans}
             disabled={loading}
-            className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm transition-colors hover:bg-slate-50 disabled:opacity-50"
+            className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition-colors hover:bg-slate-50 disabled:opacity-50"
           >
             <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
             Refresh
@@ -78,66 +71,36 @@ export default function HistoryPage() {
         </div>
       </div>
 
-      {/* ------------------------------------------------------------------ */}
-      {/* Summary stats strip                                                 */}
-      {/* ------------------------------------------------------------------ */}
+      {/* Summary stats */}
       {!loading && scans.length > 0 && (
-        <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
-          <StatCard
-            label="Total Scans"
-            value={scans.length}
-            className="bg-white"
-          />
-          <StatCard
-            label="Completed"
-            value={scans.filter((s) => s.status === "complete").length}
-            className="bg-green-50"
-            valueClass="text-green-700"
-          />
-          <StatCard
-            label="Total Vulnerabilities"
-            value={scans.reduce((sum, s) => sum + s.vulnerability_count, 0)}
-            className="bg-orange-50"
-            valueClass="text-orange-700"
-          />
-          <StatCard
-            label="Avg Duration"
-            value={
-              scans.length
-                ? `${Math.round(scans.reduce((s, x) => s + x.duration, 0) / scans.length)}s`
-                : "—"
-            }
-            className="bg-slate-100"
-          />
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+          <StatCard label="Total Scans" value={scans.length} icon={History} bgColor="bg-blue-50" color="text-blue-600" />
+          <StatCard label="Completed" value={completedCount} icon={CheckCircle2} bgColor="bg-green-50" color="text-green-600" />
+          <StatCard label="Total Vulnerabilities" value={totalVulns} icon={ShieldAlert} bgColor="bg-orange-50" color="text-orange-600" />
+          <StatCard label="Avg Duration" value={avgDuration} icon={Clock} bgColor="bg-slate-100" color="text-slate-600" />
         </div>
       )}
 
-      {/* ------------------------------------------------------------------ */}
-      {/* History table                                                       */}
-      {/* ------------------------------------------------------------------ */}
+      {/* History table */}
       <ScanHistoryTable scans={scans} loading={loading} error={error} />
     </div>
   );
 }
 
-// ---------------------------------------------------------------------------
-// Small statistic card (reused only on this page)
-// ---------------------------------------------------------------------------
-function StatCard({
-  label,
-  value,
-  className = "",
-  valueClass = "text-slate-900",
-}: {
-  label: string;
-  value: string | number;
-  className?: string;
-  valueClass?: string;
+function StatCard({ label, value, icon: Icon, bgColor, color }: {
+  label: string; value: string | number; icon: React.ElementType; bgColor: string; color: string;
 }) {
   return (
-    <div className={`rounded-xl border border-slate-200 p-4 shadow-sm ${className}`}>
-      <p className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</p>
-      <p className={`mt-1 text-2xl font-bold ${valueClass}`}>{value}</p>
+    <div className="rounded-xl border bg-white p-5 shadow-sm hover:shadow-md transition-shadow">
+      <div className="flex items-start justify-between">
+        <div>
+          <p className="text-xs font-medium text-slate-500 uppercase tracking-wide">{label}</p>
+          <p className={`mt-1.5 text-2xl font-bold ${color}`}>{value}</p>
+        </div>
+        <div className={`rounded-lg p-2.5 ${bgColor}`}>
+          <Icon className={`h-5 w-5 ${color}`} />
+        </div>
+      </div>
     </div>
   );
 }
